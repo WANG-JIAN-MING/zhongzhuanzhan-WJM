@@ -1,0 +1,208 @@
+package app.quotadeck
+
+import android.app.Application
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.KeyStore
+import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+data class Site(val id: String = UUID.randomUUID().toString(), val name: String, val url: String, val key: String, val account: Boolean = false, val userId: String = "", val unit: Double = 500000.0, val subscription: Boolean = false, val cookie: String = "")
+data class Balance(val remaining: Double, val used: Double, val unlimited: Boolean, val time: Long, val expires: Long = -1, val subscriptions: List<SubscriptionQuota> = emptyList(), val todayUsed: Double? = null, val todayError: String? = null, val todayDate: String? = null)
+data class SubscriptionQuota(val title: String, val base: Double, val total: Double, val used: Double, val advance: Double, val nextReset: Long, val advanceReset: Long, val start: Long, val end: Long, val resetMode: String, val advanceMessage: String, val id: Long = 0, val canAdvance: Boolean = false) {
+ val remaining: Double get()=(total-used).coerceAtLeast(0.0)
+}
+data class QueryState(val loading: Boolean = false, val balance: Balance? = null, val error: String? = null)
+data class AppState(val sites: List<Site> = emptyList(), val queries: Map<String, QueryState> = emptyMap(), val theme: String = "system", val storageError: String? = null, val advancing: Set<String> = emptySet(), val advanceNotices: Map<String,String> = emptyMap(), val advanceBlocked: Set<String> = emptySet())
+
+class Vault(app: Application) {
+ private val prefs = app.getSharedPreferences("quota_v1", 0)
+ private fun key(): SecretKey {
+  val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+  return (store.getKey("quota_sites_v1", null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+   init(KeyGenParameterSpec.Builder("quota_sites_v1", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
+  }.generateKey()
+ }
+ fun read(): List<Site> {
+  val raw = prefs.getString("sites", null) ?: return emptyList()
+  val parts = raw.split(":")
+  val c = Cipher.getInstance("AES/GCM/NoPadding")
+  c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)))
+  val a = JSONArray(String(c.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8))
+  return (0 until a.length()).map { i -> val j=a.getJSONObject(i); Site(j.getString("id"),j.getString("name"),j.getString("url"),j.getString("key"),j.optBoolean("account"),j.optString("userId"),j.optDouble("unit",500000.0),j.optBoolean("subscription",false),j.optString("cookie","")) }
+ }
+ fun write(sites: List<Site>) {
+  val a=JSONArray(); sites.forEach { s -> a.put(JSONObject().put("id",s.id).put("name",s.name).put("url",s.url).put("key",s.key).put("account",s.account).put("userId",s.userId).put("unit",s.unit).put("subscription",s.subscription).put("cookie",s.cookie)) }
+  val c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key())
+  val encrypted=c.doFinal(a.toString().toByteArray(Charsets.UTF_8))
+  check(prefs.edit().putString("sites", Base64.encodeToString(c.iv,Base64.NO_WRAP)+":"+Base64.encodeToString(encrypted,Base64.NO_WRAP)).commit()) { "保存失败" }
+ }
+ fun theme()=prefs.getString("theme","system") ?: "system"
+ fun theme(value: String) { check(prefs.edit().putString("theme",value).commit()) }
+}
+
+object QuotaApi {
+ fun publicUnit(base: String): Double {
+  val uri=java.net.URI(base)
+  require(uri.scheme=="https" && !uri.host.isNullOrBlank() && uri.userInfo==null) { "请输入 HTTPS 站点地址" }
+  val conn=URL(base.trimEnd('/')+"/api/status").openConnection() as HttpURLConnection
+  try {
+   conn.connectTimeout=10000; conn.readTimeout=10000; conn.instanceFollowRedirects=false
+   require(conn.responseCode==200) { "无法读取站点公开配置" }
+   return parseUnit(conn.inputStream.bufferedReader().use { it.readTextLimited() })
+  } finally { conn.disconnect() }
+ }
+ fun parseUnit(text: String): Double {
+  val root=JSONObject(text)
+  require(root.optBoolean("success")) { "站点配置接口返回失败" }
+  val unit=root.getJSONObject("data").getDouble("quota_per_unit")
+  require(unit.isFinite() && unit>0) { "站点换算值无效" }
+  return unit
+ }
+ fun fetch(s: Site): Balance {
+  val path=if(s.subscription) "/api/subscription/self" else if(s.account) "/api/user/self" else "/api/usage/token/"
+  val balance=parse(s,read(s,path))
+  if(!s.account || s.subscription) return balance
+  val day=usageDay()
+  val daily=runCatching { parseTodayUsage(read(s,"/api/log/self/stat?type=2&start_timestamp=${day.start}&end_timestamp=${day.end}")) }
+  return balance.copy(todayUsed=daily.getOrNull(),todayError=if(daily.isFailure) "今日消耗查询失败，请稍后刷新或检查统计接口权限" else null,todayDate=day.date)
+ }
+ fun parseTodayUsage(text: String): Double {
+  val root=JSONObject(text)
+  require(root.optBoolean("success")) { "消费统计接口返回失败" }
+  val value=root.getJSONObject("data").getDouble("quota")
+  require(value.isFinite() && value>=0) { "今日消费统计数值无效" }
+  return value
+ }
+ private fun read(s: Site,path: String): String {
+  val conn=URL(s.url.trimEnd('/')+path).openConnection() as HttpURLConnection
+  try {
+   conn.connectTimeout=15000; conn.readTimeout=15000; conn.instanceFollowRedirects=false
+   if(s.key.isNotBlank()) conn.setRequestProperty("Authorization","Bearer "+s.key.trim().removePrefix("Bearer "))
+   if(s.cookie.isNotBlank()) conn.setRequestProperty("Cookie",s.cookie)
+   if((s.account || s.subscription) && s.userId.isNotBlank()) conn.setRequestProperty("New-Api-User",s.userId)
+   conn.setRequestProperty("Accept","application/json")
+   val code=conn.responseCode
+   if(code !in 200..299) throw IllegalStateException(when(code) { 401 -> "未授权：请检查凭据"; 403 -> "无访问权限，请检查用户 ID 或站点限制"; in 300..399 -> "接口发生重定向，请填写最终站点地址"; 429 -> "请求过于频繁，请稍后重试"; else -> "服务器返回 HTTP $code" })
+   val text=conn.inputStream.bufferedReader().use { it.readTextLimited() }
+   return text
+  } finally { conn.disconnect() }
+ }
+ fun advanceBody(id: Long): String { require(id>0) { "订阅 ID 无效" }; return JSONObject().put("subscription_id",id).toString() }
+ fun checkAdvanceResponse(text: String) {
+  val root=JSONObject(text)
+  check(root.optBoolean("success")) { "站点拒绝透支：可能已提前领取、处于订阅最后一天或当前无权限，请刷新状态后查看站点说明" }
+ }
+ fun advance(s: Site,id: Long) {
+  val body=advanceBody(id).toByteArray(Charsets.UTF_8)
+  val conn=URL(s.url.trimEnd('/')+"/api/subscription/self/advance-quota").openConnection() as HttpURLConnection
+  try {
+   conn.requestMethod="POST"; conn.doOutput=true; conn.connectTimeout=15000; conn.readTimeout=15000; conn.instanceFollowRedirects=false
+   if(s.key.isNotBlank()) conn.setRequestProperty("Authorization","Bearer "+s.key.trim().removePrefix("Bearer "))
+   if(s.cookie.isNotBlank()) conn.setRequestProperty("Cookie",s.cookie)
+   if(s.userId.isNotBlank()) conn.setRequestProperty("New-Api-User",s.userId)
+   conn.setRequestProperty("Content-Type","application/json; charset=utf-8"); conn.setRequestProperty("Accept","application/json")
+   conn.setFixedLengthStreamingMode(body.size)
+   conn.outputStream.use { it.write(body) }
+   check(conn.responseCode in 200..299) { "透支接口返回 HTTP ${conn.responseCode}，请刷新状态后核实" }
+   checkAdvanceResponse(conn.inputStream.bufferedReader().use { it.readTextLimited() })
+  } finally { conn.disconnect() }
+ }
+ fun authError(message: String): String = when {
+  message.contains("user",true) && (message.contains("id",true) || message.contains("New-Api",true)) -> "用户 ID 缺失或不匹配，请使用网页登录重新绑定"
+  message.contains("access token",true) || message.contains("未登录") || message.contains("无权") || message.contains("令牌") -> "登录状态无效或凭据类型不支持，请在站点编辑中使用 Neco 网页登录"
+  else -> "订阅接口拒绝查询，请重新网页登录；也可能是账户权限或站点接口限制"
+ }
+ fun parseSubscriptions(text: String): Balance {
+  val root=JSONObject(text)
+  check(root.optBoolean("success")) { authError(root.optString("message")) }
+  val data=root.getJSONObject("data")
+  val items=data.optJSONArray("all_subscriptions") ?: data.optJSONArray("subscriptions")
+  require(items!=null) { "接口缺少订阅列表，请确认订阅接口兼容性" }
+  val list=(0 until items.length()).mapNotNull { i ->
+   val item=items.getJSONObject(i); val sub=item.getJSONObject("subscription")
+   if(sub.optString("status")!="active") return@mapNotNull null
+   val base=sub.getDouble("amount_total"); val used=sub.getDouble("amount_used"); val advance=sub.optDouble("quota_advance_amount",0.0)
+   val total=if(item.has("effective_amount_total") && !item.isNull("effective_amount_total")) item.getDouble("effective_amount_total") else base+advance
+   require(listOf(base,used,advance,total).all { it.isFinite() && it>=0 }) { "订阅额度数值无效" }
+   SubscriptionQuota(item.optString("plan_title","订阅套餐"),base,total,used,advance,sub.optLong("next_reset_time"),sub.optLong("quota_advance_reset_time"),sub.optLong("start_time"),sub.optLong("end_time"),sub.optString("quota_reset_mode","calendar"),item.optString("advance_unavailable_message"),sub.optLong("id"),item.optBoolean("can_advance_quota",false))
+  }
+  val limited=list.filter { it.total>0 }
+  return Balance(limited.sumOf { it.remaining },limited.sumOf { it.used },list.any { it.total==0.0 },System.currentTimeMillis(),subscriptions=list)
+ }
+ fun parse(s: Site,text: String): Balance {
+   if(s.subscription) return parseSubscriptions(text)
+   val root=JSONObject(text)
+   if(!(if(s.account) root.optBoolean("success",false) else root.optBoolean("code",false))) throw IllegalStateException("未授权或接口拒绝查询，请检查凭据和站点配置")
+   val d=root.getJSONObject("data")
+   if(s.account && s.userId.isNotBlank() && d.has("id")) {
+    require(d.getLong("id").toString()==s.userId.trim()) { "返回账户与配置用户 ID 不一致，请重新网页登录绑定" }
+   }
+   val remain=if(s.account) "quota" else "total_available"
+   val used=if(s.account) "used_quota" else "total_used"
+   require(d.has(remain) && d.has(used)) { "接口缺少额度字段，请确认站点兼容 New API" }
+   val available=d.getDouble(remain); val consumed=d.getDouble(used)
+   require(available.isFinite() && consumed.isFinite()) { "额度数值无效" }
+   return Balance(available,consumed,!s.account && d.optBoolean("unlimited_quota"),System.currentTimeMillis(),d.optLong("expires_at",0))
+ }
+ private fun java.io.Reader.readTextLimited(): String { val b=CharArray(4096); val out=StringBuilder(); while(true) { val n=read(b); if(n<0) break; out.append(b,0,n); require(out.length<=1048576) { "接口响应过大" } }; return out.toString() }
+}
+
+class QuotaModel(app: Application): AndroidViewModel(app) {
+ private val vault=Vault(app)
+ private val mutable=MutableStateFlow(AppState())
+ val state=mutable.asStateFlow()
+ init { viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { AppState(sites=vault.read(), theme=vault.theme()) } }.fold({ mutable.value=it; refreshAll() },{ mutable.value=AppState(storageError="无法读取本地加密配置，请勿卸载应用；可尝试重新启动。") }) } }
+ fun save(site: Site, done: (String?)->Unit) { viewModelScope.launch {
+  val list=mutable.value.sites.toMutableList(); val index=list.indexOfFirst { it.id==site.id }; if(index<0) list.add(site) else list[index]=site
+  val result=withContext(Dispatchers.IO) { runCatching { vault.write(list) } }
+  if(result.isSuccess) { mutable.value=mutable.value.copy(sites=list,queries=mutable.value.queries-site.id); done(null); refresh(site) } else done("保存失败，请重试")
+ } }
+ fun delete(site: Site) { viewModelScope.launch { val list=mutable.value.sites.filterNot { it.id==site.id }; val ok=withContext(Dispatchers.IO) { runCatching { vault.write(list) }.isSuccess }; if(ok) mutable.value=mutable.value.copy(sites=list,queries=mutable.value.queries-site.id) else mutable.value=mutable.value.copy(storageError="删除失败，请重试") } }
+ fun theme(value: String) { viewModelScope.launch { if(withContext(Dispatchers.IO) { runCatching { vault.theme(value) }.isSuccess }) mutable.value=mutable.value.copy(theme=value) } }
+ fun advance(s: Site,id: Long) {
+  val st=mutable.value
+  val item=st.queries[s.id]?.balance?.subscriptions?.firstOrNull { it.id==id }
+  if(!s.subscription || item?.canAdvance!=true || id<=0 || s.id in st.advancing || s.id in st.advanceBlocked || st.queries[s.id]?.loading==true || st.queries[s.id]?.error!=null || st.sites.none { it==s }) return
+  mutable.value=st.copy(advancing=st.advancing+s.id,advanceNotices=st.advanceNotices-s.id)
+  viewModelScope.launch {
+   val result=withContext(Dispatchers.IO) { runCatching { QuotaApi.advance(s,id) } }
+   val current=mutable.value
+   mutable.value=current.copy(advancing=current.advancing-s.id,advanceBlocked=current.advanceBlocked+s.id,advanceNotices=current.advanceNotices+(s.id to if(result.isSuccess) "透支成功，正在刷新额度" else "透支未确认或被站点拒绝；请先刷新核实，不要重复提交"))
+   if(current.sites.any { it==s }) refresh(s)
+  }
+ }
+ fun refreshAll() { mutable.value.sites.forEach { refresh(it) } }
+ fun refresh(s: Site) {
+  if(mutable.value.queries[s.id]?.loading==true || s.id in mutable.value.advancing) return
+  mutable.value=mutable.value.copy(queries=mutable.value.queries+(s.id to (mutable.value.queries[s.id] ?: QueryState()).copy(loading=true,error=null)))
+  viewModelScope.launch {
+   val result=withContext(Dispatchers.IO) { runCatching { QuotaApi.fetch(s) } }
+   if(mutable.value.sites.none { it==s }) return@launch
+   val old=mutable.value.queries[s.id]?.balance
+   val q=result.fold({ QueryState(balance=it) },{ QueryState(balance=old,error=when(it) { is javax.net.ssl.SSLException -> "安全连接失败，请检查站点证书"; is java.net.SocketTimeoutException -> "连接超时，请重试"; is java.net.UnknownHostException -> "无法解析站点地址"; is IllegalStateException, is IllegalArgumentException -> it.message; else -> "查询失败，请检查网络与接口兼容性" }) })
+   val previousNotice=mutable.value.advanceNotices[s.id]
+   val notice=when {
+    previousNotice=="透支成功，正在刷新额度" -> if(result.isSuccess) "透支成功，额度已刷新" else "透支已成功，但额度刷新失败，请手动刷新"
+    result.isSuccess && previousNotice!=null -> "状态已刷新，请核对已领取额度与抵扣时间"
+    else -> previousNotice
+   }
+   mutable.value=mutable.value.copy(queries=mutable.value.queries+(s.id to q),advanceBlocked=if(result.isSuccess) mutable.value.advanceBlocked-s.id else mutable.value.advanceBlocked,advanceNotices=if(notice!=null) mutable.value.advanceNotices+(s.id to notice) else mutable.value.advanceNotices)
+  }
+ }
+}

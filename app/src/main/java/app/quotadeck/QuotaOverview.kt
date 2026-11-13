@@ -1,6 +1,9 @@
 package app.quotadeck
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.runtime.getValue
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -32,7 +35,7 @@ fun overviewProgress(query: QueryState?): Float? {
 
 @Composable fun QuotaOverview(state: AppState) {
  Panel(spacing=10.dp) {
-  if(state.sites.any { state.queries[it.id]?.loading==true }) {
+  AnimatedVisibility(visible=state.sites.any { state.queries[it.id]?.loading==true },enter=fadeIn(tween(160))+expandVertically(tween(200)),exit=fadeOut(tween(120))+shrinkVertically(tween(180))) {
    Row(Modifier.fillMaxWidth().padding(vertical=3.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
     CircularProgressIndicator(modifier=Modifier.size(18.dp),strokeWidth=2.dp,color=MaterialTheme.colorScheme.primary)
     Text("正在刷新…",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -43,10 +46,11 @@ fun overviewProgress(query: QueryState?): Float? {
     if(site.account && !site.subscription) AccountOverviewRow(site,state.queries[site.id]) else {
      Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
       Text(site.name,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge)
-      Text(overviewAmount(site,state.queries[site.id]),style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.SemiBold)
+      GentleValue(overviewAmount(site,state.queries[site.id]),style=MaterialTheme.typography.titleMedium.copy(fontWeight=FontWeight.SemiBold))
      }
      val progress=overviewProgress(state.queries[site.id])
-     LinearProgressIndicator(progress={progress ?: 0f},modifier=Modifier.fillMaxWidth().height(6.dp),color=MaterialTheme.colorScheme.primary,trackColor=MaterialTheme.colorScheme.outlineVariant)
+     val animatedProgress by animateFloatAsState(progress ?: 0f,tween(260),label="quota progress")
+     LinearProgressIndicator(progress={animatedProgress},modifier=Modifier.fillMaxWidth().height(6.dp),color=MaterialTheme.colorScheme.primary,trackColor=MaterialTheme.colorScheme.outlineVariant)
     }
    }
   }
@@ -71,8 +75,8 @@ fun overviewProgress(query: QueryState?): Float? {
   val factor=if(amountWidth>0) (available/amountWidth).coerceIn(0.1f,1f) else 1f
   Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
    Text(site.name,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge,maxLines=1,overflow=TextOverflow.Ellipsis)
-   Text(dailyText,style=dailyStyle.copy(fontSize=(dailyStyle.fontSize.value*factor).sp),color=if(daily=="—") MaterialTheme.colorScheme.onSurfaceVariant else red,maxLines=1,softWrap=false)
-   Text(balance,style=balanceStyle.copy(fontSize=(balanceStyle.fontSize.value*factor).sp),maxLines=1,softWrap=false)
+   GentleValue(dailyText,style=dailyStyle.copy(fontSize=(dailyStyle.fontSize.value*factor).sp),color=if(daily=="—") MaterialTheme.colorScheme.onSurfaceVariant else red)
+   GentleValue(balance,style=balanceStyle.copy(fontSize=(balanceStyle.fontSize.value*factor).sp))
   }
  }
 }

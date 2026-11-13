@@ -40,7 +40,7 @@ fun normalizeBase(value: String): String {
  Surface(onClick={onTheme(pair.first)},color=MaterialTheme.colorScheme.surface) { Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(vertical=3.dp),verticalAlignment=Alignment.CenterVertically) { RadioButton(selected=state.theme==pair.first,onClick=null); Spacer(Modifier.width(12.dp)); Text(pair.second) } }
  }
  }
- Panel { Text("本地数据",style=MaterialTheme.typography.titleMedium); Secondary("站点地址和访问凭据使用 Android Keystore 加密保存，系统备份已关闭。应用只向你配置的站点发起额度查询。"); HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant); Text("额度换算",style=MaterialTheme.typography.titleMedium); Secondary("每站可从 /api/status 读取 1 USD 对应的 quota，也可手动填写。Neco Api 当前按 USD 展示，默认换算值 500000。令牌不限额不代表所属账户余额无限。"); Secondary("额度 1.0.18") }
+ Panel { Text("本地数据",style=MaterialTheme.typography.titleMedium); Secondary("站点地址和访问凭据使用 Android Keystore 加密保存，系统备份已关闭。应用向你配置的站点查询额度；令牌管理操作由你主动触发。"); HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant); Text("额度换算",style=MaterialTheme.typography.titleMedium); Secondary("每站可从 /api/status 读取 1 USD 对应的 quota，也可手动填写。Neco Api 当前按 USD 展示，默认换算值 500000。令牌不限额不代表所属账户余额无限。"); Secondary("额度 1.0.28") }
 }
 @Composable fun SiteDialog(original: Site?,onDismiss:()->Unit,onSave:(Site,(String?)->Unit)->Unit,onDelete:(Site)->Unit) {
  var name by rememberSaveable { mutableStateOf(original?.name ?: "") }; var url by rememberSaveable { mutableStateOf(original?.url ?: "") }
@@ -55,12 +55,12 @@ fun normalizeBase(value: String): String {
  var error by remember { mutableStateOf<String?>(null) }; var saving by remember { mutableStateOf(false) }; var confirmDelete by remember { mutableStateOf(false) }
  val scope=rememberCoroutineScope(); var detecting by remember { mutableStateOf(false) }; var detected by remember { mutableStateOf<String?>(null) }
  AlertDialog(onDismissRequest={if(!saving) onDismiss()},containerColor=MaterialTheme.colorScheme.surface,tonalElevation=0.dp,title={Text(if(original==null) "添加站点" else "编辑站点")},text={
- Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+ Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(5.dp)) {
  if(original==null) OutlinedButton(onClick={name="Neco Api"; url=NECO_BASE; unit="500000"; detected=null},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("填入 Neco Api 地址（保留查询类型）")}
  OutlinedTextField(name,{name=it},label={Text("站点名称")},singleLine=true,modifier=Modifier.fillMaxWidth())
  OutlinedTextField(url,{url=it},label={Text("站点地址 · HTTPS")},placeholder={Text("https://example.com")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Uri),modifier=Modifier.fillMaxWidth())
  Secondary("填写站点根地址，不含 /v1 或接口路径。")
- Column {
+ Column(verticalArrangement=Arrangement.spacedBy(5.dp)) {
   FilterChip(selected=queryMode=="account",onClick={queryMode="account"},label={Text("个人中心当前余额")})
   FilterChip(selected=queryMode=="subscription",onClick={queryMode="subscription"},label={Text("订阅当日 / 周期用量")})
   FilterChip(selected=queryMode=="token",onClick={queryMode="token"},label={Text("令牌额度")})

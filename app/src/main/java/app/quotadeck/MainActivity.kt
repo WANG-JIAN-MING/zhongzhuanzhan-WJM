@@ -1,6 +1,9 @@
 package app.quotadeck
 
 import android.os.Bundle
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -50,6 +53,7 @@ class MainActivity: ComponentActivity() {
  when(kind) {
  "预览" -> { drawRoundRect(tint,Offset(3*u,4*u),Size(18*u,16*u),androidx.compose.ui.geometry.CornerRadius(3*u),style=stroke); line(3f,10f,21f,10f); line(10f,10f,10f,20f) }
  "额度" -> { drawRoundRect(tint,Offset(3*u,4*u),Size(18*u,16*u),androidx.compose.ui.geometry.CornerRadius(3*u),style=stroke); line(7f,9f,17f,9f); line(7f,14f,12f,14f) }
+ "令牌" -> { drawCircle(tint,4*u,Offset(8*u,8*u),style=stroke); line(11f,11f,21f,21f); line(16f,16f,19f,13f); line(19f,19f,22f,16f) }
  "站点" -> { drawCircle(tint,9*u,Offset(12*u,12*u),style=stroke); drawOval(tint,Offset(8*u,3*u),Size(8*u,18*u),style=stroke); line(3f,12f,21f,12f) }
  "设置" -> { listOf(6f,12f,18f).forEachIndexed { i,y -> line(3f,y,21f,y); drawCircle(tint,2.2f*u,Offset((if(i==1)8 else 16)*u,y*u),style=stroke) } }
  "添加" -> { line(12f,4f,12f,20f); line(4f,12f,20f,12f) }
@@ -59,35 +63,47 @@ class MainActivity: ComponentActivity() {
  }
 }
 private val MaterialThemeColorFallback=Color.Transparent
-@Composable fun Panel(spacing: androidx.compose.ui.unit.Dp = 16.dp, content: @Composable ColumnScope.()->Unit) { Surface(shape=RoundedCornerShape(28.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(0.7.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()) { Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(spacing),content=content) } }
+@Composable fun Panel(spacing: androidx.compose.ui.unit.Dp = 16.dp, animateSize: Boolean = true, contentPadding: androidx.compose.ui.unit.Dp = 20.dp, content: @Composable ColumnScope.()->Unit) {
+ var appeared by remember { mutableStateOf(false) }
+ LaunchedEffect(Unit) { appeared=true }
+ val alpha by animateFloatAsState(if(appeared) 1f else 0f,tween(180),label="card entry")
+ Surface(shape=RoundedCornerShape(28.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(0.7.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth().graphicsLayer { this.alpha=alpha }.then(if(animateSize) Modifier.animateContentSize(tween(200)) else Modifier)) {
+  Column(Modifier.padding(contentPadding),verticalArrangement=Arrangement.spacedBy(spacing),content=content)
+ }
+}
 @Composable fun Secondary(text: String) { Text(text,color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium) }
 @Composable fun QuotaApp(model: QuotaModel,state: AppState) {
  var tab by rememberSaveable { mutableIntStateOf(0) }; var editing by remember { mutableStateOf<Site?>(null) }; var adding by rememberSaveable { mutableStateOf(false) }
- val scrolls=listOf(rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState())
+ val scrolls=listOf(rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState())
+ val pageMotion=remember { Animatable(1f) }
+ LaunchedEffect(tab) { pageMotion.snapTo(0f); pageMotion.animateTo(1f,tween(200,easing=FastOutSlowInEasing)) }
  BackHandler(enabled=tab!=0 && !adding && editing==null) { tab=0 }
  Scaffold(containerColor=MaterialTheme.colorScheme.background,bottomBar={
  Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp,vertical=12.dp),contentAlignment=Alignment.Center) {
  Surface(shape=RoundedCornerShape(50),color=MaterialTheme.colorScheme.surface,border=BorderStroke(0.7.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.widthIn(max=480.dp).fillMaxWidth()) {
- Row(Modifier.padding(8.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)) { listOf("预览","额度","站点","设置").forEachIndexed { i,title ->
+ Row(Modifier.padding(8.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)) { listOf("预览","额度","令牌","站点","设置").forEachIndexed { i,title ->
  val selected=tab==i
- Surface(onClick={ tab=i },shape=RoundedCornerShape(50),color=if(selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,contentColor=if(selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f)) {
+ val navBackground by animateColorAsState(if(selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,tween(180),label="nav background")
+ val navForeground by animateColorAsState(if(selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,tween(180),label="nav foreground")
+ Surface(onClick={ tab=i },shape=RoundedCornerShape(50),color=navBackground,contentColor=navForeground,modifier=Modifier.weight(1f)) {
  Column(Modifier.heightIn(min=56.dp).padding(horizontal=4.dp,vertical=10.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(4.dp)) { LineIcon(title,tint=LocalContentColor.current); Text(title,style=MaterialTheme.typography.labelMedium) }
  }
  } }
  }
  }
  }) { insets ->
- Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().verticalScroll(scrolls[tab]).padding(horizontal=16.dp).padding(top=20.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
- Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(listOf("预览","额度","站点","设置")[tab],fontSize=30.sp,fontWeight=FontWeight.Bold); Spacer(Modifier.height(1.dp)); Secondary(listOf("New API · ${state.sites.size} 个站点","New API · ${state.sites.size} 个站点","管理地址与访问凭据","外观与本地数据")[tab]) }; if(tab<3) IconButton(onClick={ if(tab<=1 && state.sites.isNotEmpty()) model.refreshAll() else adding=true }) { LineIcon(if(tab<=1 && state.sites.isNotEmpty()) "刷新" else "添加") } }
+ Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().graphicsLayer { alpha=pageMotion.value; translationY=(1f-pageMotion.value)*6.dp.toPx() }.verticalScroll(scrolls[tab]).padding(horizontal=16.dp).padding(top=20.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+ Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(listOf("预览","额度","令牌","站点","设置")[tab],fontSize=30.sp,fontWeight=FontWeight.Bold); Spacer(Modifier.height(1.dp)); Secondary(listOf("New API · ${state.sites.size} 个站点","New API · ${state.sites.size} 个站点","管理模型调用令牌","管理地址与访问凭据","外观与本地数据")[tab]) }; if(tab<=1 || tab==3) IconButton(onClick={ if(tab<=1 && state.sites.isNotEmpty()) model.refreshAll() else adding=true }) { if(tab<=1 && state.sites.isNotEmpty()) RefreshGlyph(state.sites.any { state.queries[it.id]?.loading==true }) else LineIcon("添加") } }
  state.storageError?.let { Panel { Text(it) } }
  when(tab) {
  0 -> if(state.sites.isNotEmpty()) QuotaOverview(state) else Panel {
   Text("尚未添加站点",style=MaterialTheme.typography.titleLarge)
   Button(onClick={adding=true},modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") }
  }
- 1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance)
- 2 -> Sites(state,onAdd={adding=true},onEdit={editing=it})
- 3 -> Settings(state,onTheme=model::theme)
+ 1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance,onDelete=model::delete)
+ 2 -> Tokens(state,onRefreshQuota=model::refreshAll)
+ 3 -> Sites(state,onAdd={adding=true},onEdit={editing=it})
+ 4 -> Settings(state,onTheme=model::theme)
  }
  }
  }
@@ -95,13 +111,17 @@ private val MaterialThemeColorFallback=Color.Transparent
 }
 fun amount(value: Double,unit: Double)=String.format(Locale.US,"%,.2f",value/unit)
 fun timestamp(time: Long)=SimpleDateFormat("MM-dd HH:mm",Locale.getDefault()).format(Date(time))
-@Composable fun Home(state: AppState,onAdd:()->Unit,onRefresh:(Site)->Unit,onAdvance:(Site,Long)->Unit) {
+@Composable fun Home(state: AppState,onAdd:()->Unit,onRefresh:(Site)->Unit,onAdvance:(Site,Long)->Unit,onDelete:(Site)->Unit) {
+ var deleting by remember { mutableStateOf<Site?>(null) }
+ var expandedSite by remember { mutableStateOf<String?>(null) }
+ deleting?.let { site -> SiteDeleteDialog(site,onDismiss={deleting=null},onDelete={onDelete(site); deleting=null; expandedSite=null}) }
  if(state.sites.isEmpty()) { Panel { LineIcon("额度",Modifier.size(36.dp)); Text("添加你的第一个站点",style=MaterialTheme.typography.titleLarge); Secondary("连接 New API，查看令牌额度或账户余额。"); Button(onClick=onAdd,modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") } }; return }
- if(state.sites.any { !it.subscription }) Panel { Secondary("已查询的非订阅剩余额度 · USD"); val available=state.sites.filterNot { it.subscription }.mapNotNull { s -> state.queries[s.id]?.balance?.takeUnless { it.unlimited }?.let { it.remaining/s.unit } }; Text(if(available.isEmpty()) "—" else "$ "+String.format(Locale.US,"%,.2f",available.sum()),fontSize=34.sp,fontWeight=FontWeight.SemiBold); Secondary("${state.queries.values.count { it.balance!=null }} / ${state.sites.size} 个站点有查询结果 · 无限令牌不计入合计") }
- state.sites.sortedByDescending { it.subscription }.forEach { site -> val q=state.queries[site.id] ?: QueryState(); val b=q.balance
- if(site.subscription) { SubscriptionPanel(site,q,onRefresh,onAdvance,site.id in state.advancing,site.id in state.advanceBlocked,state.advanceNotices[site.id]); return@forEach }
- Panel {
- Row(verticalAlignment=Alignment.CenterVertically) { LineIcon("站点"); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(site.name,style=MaterialTheme.typography.titleMedium); Spacer(Modifier.height(1.dp)); Secondary(if(site.account) "账户余额" else "令牌额度") }; IconButton(onClick={onRefresh(site)},enabled=!q.loading) { LineIcon("刷新") } }
+ state.sites.sortedByDescending { it.subscription }.forEach { site -> key(site.id) {
+ val q=state.queries[site.id] ?: QueryState(); val b=q.balance
+ SwipeSiteCard(site,expandedSite==site.id,onExpanded={expandedSite=if(it) site.id else null},onDelete={deleting=site}) {
+ if(site.subscription) SubscriptionPanel(site,q,onRefresh,onAdvance,site.id in state.advancing,site.id in state.advanceBlocked,state.advanceNotices[site.id])
+ else Panel {
+ Row(verticalAlignment=Alignment.CenterVertically) { LineIcon("站点"); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(site.name,style=MaterialTheme.typography.titleMedium); Spacer(Modifier.height(1.dp)); Secondary(if(site.account) "账户余额" else "令牌额度") }; IconButton(onClick={onRefresh(site)},enabled=!q.loading) { RefreshGlyph(q.loading) } }
  Column(verticalArrangement=Arrangement.spacedBy(4.dp)) { Secondary(if(site.account) "当前余额 · USD" else "剩余 · USD"); Text(if(b==null) "—" else if(b.unlimited) "无限额度" else "$ "+amount(b.remaining,site.unit),fontSize=30.sp,fontWeight=FontWeight.SemiBold) }
  if(site.account) {
   Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
@@ -121,4 +141,5 @@ fun timestamp(time: Long)=SimpleDateFormat("MM-dd HH:mm",Locale.getDefault()).fo
  if(q.error!=null && b!=null) Secondary("显示上次成功查询结果")
  }
  }
+ } }
 }

@@ -28,11 +28,6 @@ fun normalizeBase(value: String): String {
  return URI(uri.scheme,uri.userInfo,uri.host,uri.port,rootPath,uri.query,uri.fragment).toString().trimEnd('/')
 }
 
-@Composable fun Sites(state: AppState,onAdd:()->Unit,onEdit:(Site)->Unit) {
- if(state.sites.isEmpty()) Panel { Text("尚未添加站点",style=MaterialTheme.typography.titleLarge); Secondary("支持多个 New API 站点，凭据加密保存在本机。"); Button(onClick=onAdd,modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") } }
- state.sites.forEach { s -> Panel { Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.padding(vertical=3.dp)) { LineIcon("站点"); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(s.name,style=MaterialTheme.typography.titleMedium); Spacer(Modifier.height(1.dp)); Secondary(s.url); Secondary(if(s.subscription) "订阅当日 / 周期用量" else if(s.account) "用户管理凭据 · 账户余额" else "模型令牌 · 令牌额度") }; TextButton(onClick={onEdit(s)}) { Text("编辑") } } } }
- if(state.sites.isNotEmpty()) OutlinedButton(onClick=onAdd,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) { LineIcon("添加"); Spacer(Modifier.width(12.dp)); Text("添加站点") }
-}
 @Composable fun Settings(state: AppState,onTheme:(String)->Unit) {
  Panel { Text("外观",style=MaterialTheme.typography.titleMedium)
  listOf("system" to "跟随系统","light" to "浅色","dark" to "深色").forEachIndexed { index,pair ->
@@ -40,7 +35,7 @@ fun normalizeBase(value: String): String {
  Surface(onClick={onTheme(pair.first)},color=MaterialTheme.colorScheme.surface) { Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(vertical=3.dp),verticalAlignment=Alignment.CenterVertically) { RadioButton(selected=state.theme==pair.first,onClick=null); Spacer(Modifier.width(12.dp)); Text(pair.second) } }
  }
  }
- Panel { Text("本地数据",style=MaterialTheme.typography.titleMedium); Secondary("站点地址和访问凭据使用 Android Keystore 加密保存，系统备份已关闭。应用向你配置的站点查询额度；令牌管理操作由你主动触发。"); HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant); Text("额度换算",style=MaterialTheme.typography.titleMedium); Secondary("每站可从 /api/status 读取 1 USD 对应的 quota，也可手动填写。Neco Api 当前按 USD 展示，默认换算值 500000。令牌不限额不代表所属账户余额无限。"); Secondary("额度 1.0.28") }
+ Panel { Text("本地数据",style=MaterialTheme.typography.titleMedium); Secondary("站点地址和访问凭据使用 Android Keystore 加密保存，系统备份已关闭。应用向你配置的站点查询额度；令牌管理操作由你主动触发。"); HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant); Text("额度换算",style=MaterialTheme.typography.titleMedium); Secondary("每站可从 /api/status 读取 1 USD 对应的 quota，也可手动填写。Neco Api 当前按 USD 展示，默认换算值 500000。令牌不限额不代表所属账户余额无限。"); Secondary("额度 "+BuildConfig.VERSION_NAME) }
 }
 @Composable fun SiteDialog(original: Site?,onDismiss:()->Unit,onSave:(Site,(String?)->Unit)->Unit,onDelete:(Site)->Unit) {
  var name by rememberSaveable { mutableStateOf(original?.name ?: "") }; var url by rememberSaveable { mutableStateOf(original?.url ?: "") }

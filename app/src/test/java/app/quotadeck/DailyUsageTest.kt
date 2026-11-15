@@ -28,5 +28,6 @@ class DailyUsageTest {
   assertEquals("$ 0.34",todayUsageAmount(b,500000.0,UsageDay("2026-11-11",0,0)))
   assertEquals("—",todayUsageAmount(b,500000.0,UsageDay("2026-11-12",0,0)))
   assertEquals("—",todayUsageAmount(b.copy(todayUsed=null),500000.0,UsageDay("2026-11-11",0,0)))
+  assertEquals("—",todayUsageAmount(b.copy(todayError="统计失败"),500000.0,UsageDay("2026-11-11",0,0)))
  }
 }

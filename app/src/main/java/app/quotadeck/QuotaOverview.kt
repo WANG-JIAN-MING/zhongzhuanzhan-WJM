@@ -48,6 +48,16 @@ fun overviewProgress(query: QueryState?): Float? {
       Text(site.name,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge)
       GentleValue(overviewAmount(site,state.queries[site.id]),style=MaterialTheme.typography.titleMedium.copy(fontWeight=FontWeight.SemiBold))
      }
+     if(site.subscription) {
+      val query=state.queries[site.id]
+      query?.balance?.subscriptions?.forEach { sub ->
+       Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        Text(sub.title,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
+        Text("今日 "+if(query.error==null) subscriptionTodayAmount(sub,site.unit) else "—",style=MaterialTheme.typography.bodyMedium)
+       }
+       sub.todayError?.let { Text(it,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error) }
+      }
+     }
      val progress=overviewProgress(state.queries[site.id])
      val animatedProgress by animateFloatAsState(progress ?: 0f,tween(260),label="quota progress")
      LinearProgressIndicator(progress={animatedProgress},modifier=Modifier.fillMaxWidth().height(6.dp),color=MaterialTheme.colorScheme.primary,trackColor=MaterialTheme.colorScheme.outlineVariant)
@@ -55,7 +65,12 @@ fun overviewProgress(query: QueryState?): Float? {
    }
   }
   if(state.sites.any { it.account && !it.subscription }) {
-   Text("今日消耗含订阅抵扣",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+   Text("个人中心今日消耗仅统计钱包扣款，不含订阅抵扣",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+   state.sites.filter { it.account && !it.subscription }.forEach { site ->
+    state.queries[site.id]?.balance?.todayError?.let { error ->
+     Text("${site.name}：$error",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+    }
+   }
   }
  }
 }

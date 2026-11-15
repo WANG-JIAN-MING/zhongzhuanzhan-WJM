@@ -6,6 +6,12 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,33 +30,49 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class Site(val id: String = UUID.randomUUID().toString(), val name: String, val url: String, val key: String, val account: Boolean = false, val userId: String = "", val unit: Double = 500000.0, val subscription: Boolean = false, val cookie: String = "")
 data class Balance(val remaining: Double, val used: Double, val unlimited: Boolean, val time: Long, val expires: Long = -1, val subscriptions: List<SubscriptionQuota> = emptyList(), val todayUsed: Double? = null, val todayError: String? = null, val todayDate: String? = null)
-data class SubscriptionQuota(val title: String, val base: Double, val total: Double, val used: Double, val advance: Double, val nextReset: Long, val advanceReset: Long, val start: Long, val end: Long, val resetMode: String, val advanceMessage: String, val id: Long = 0, val canAdvance: Boolean = false) {
+data class SubscriptionQuota(val title: String, val base: Double, val total: Double, val used: Double, val advance: Double, val nextReset: Long, val advanceReset: Long, val start: Long, val end: Long, val resetMode: String, val advanceMessage: String, val id: Long = 0, val canAdvance: Boolean = false, val todayUsed: Double? = null, val todayDate: String? = null, val todayError: String? = null) {
  val remaining: Double get()=(total-used).coerceAtLeast(0.0)
 }
 data class QueryState(val loading: Boolean = false, val balance: Balance? = null, val error: String? = null)
-data class AppState(val sites: List<Site> = emptyList(), val queries: Map<String, QueryState> = emptyMap(), val theme: String = "system", val storageError: String? = null, val advancing: Set<String> = emptySet(), val advanceNotices: Map<String,String> = emptyMap(), val advanceBlocked: Set<String> = emptySet())
+data class AppState(val sites: List<Site> = emptyList(), val queries: Map<String, QueryState> = emptyMap(), val theme: String = "system", val storageError: String? = null, val advancing: Set<String> = emptySet(), val advanceNotices: Map<String,String> = emptyMap(), val advanceBlocked: Set<String> = emptySet(), val storageStatus: StorageStatus = StorageStatus.READY)
 
 class Vault(app: Application) {
- private val prefs = app.getSharedPreferences("quota_v1", 0)
- private fun key(): SecretKey {
+ private val prefs by lazy { app.getSharedPreferences("quota_v1", 0) }
+ private fun key(create: Boolean): SecretKey {
   val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-  return (store.getKey("quota_sites_v1", null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+  (store.getKey("quota_sites_v1", null) as? SecretKey)?.let { return it }
+  check(create) { "本地加密密钥不可用，已保留原配置" }
+  return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
    init(KeyGenParameterSpec.Builder("quota_sites_v1", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
   }.generateKey()
  }
  fun read(): List<Site> {
-  val raw = prefs.getString("sites", null) ?: return emptyList()
-  val parts = raw.split(":")
-  val c = Cipher.getInstance("AES/GCM/NoPadding")
-  c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)))
-  val a = JSONArray(String(c.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8))
-  return (0 until a.length()).map { i -> val j=a.getJSONObject(i); Site(j.getString("id"),j.getString("name"),j.getString("url"),j.getString("key"),j.optBoolean("account"),j.optString("userId"),j.optDouble("unit",500000.0),j.optBoolean("subscription",false),j.optString("cookie","")) }
+  val raw = storageStep(StorageStage.PREFERENCES) { prefs.getString("sites", null) } ?: return emptyList()
+  val parts = storageStep(StorageStage.FORMAT) {
+   raw.split(":").also { check(it.size == 2 && it.all(String::isNotEmpty)) }
+    .map { Base64.decode(it, Base64.NO_WRAP) }
+  }
+  val secret = storageStep(StorageStage.KEYSTORE) { key(create = false) }
+  val plaintext = storageStep(StorageStage.DECRYPT) {
+   Cipher.getInstance("AES/GCM/NoPadding").run {
+    init(Cipher.DECRYPT_MODE, secret, GCMParameterSpec(128, parts[0]))
+    String(doFinal(parts[1]), Charsets.UTF_8)
+   }
+  }
+  return storageStep(StorageStage.PARSE) {
+   val a = JSONArray(plaintext)
+   (0 until a.length()).map { i -> val j=a.getJSONObject(i); Site(j.getString("id"),j.getString("name"),j.getString("url"),j.getString("key"),j.optBoolean("account"),j.optString("userId"),j.optDouble("unit",500000.0),j.optBoolean("subscription",false),j.optString("cookie","")) }
+  }
  }
- fun write(sites: List<Site>) {
+ fun write(sites: List<Site>, restoredTheme: String? = null) {
   val a=JSONArray(); sites.forEach { s -> a.put(JSONObject().put("id",s.id).put("name",s.name).put("url",s.url).put("key",s.key).put("account",s.account).put("userId",s.userId).put("unit",s.unit).put("subscription",s.subscription).put("cookie",s.cookie)) }
-  val c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key())
+  // Existing ciphertext must remain readable before it may be replaced.
+  if(prefs.contains("sites")) read()
+  val c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key(create = !prefs.contains("sites")))
   val encrypted=c.doFinal(a.toString().toByteArray(Charsets.UTF_8))
-  check(prefs.edit().putString("sites", Base64.encodeToString(c.iv,Base64.NO_WRAP)+":"+Base64.encodeToString(encrypted,Base64.NO_WRAP)).commit()) { "保存失败" }
+  val editor=prefs.edit().putString("sites", Base64.encodeToString(c.iv,Base64.NO_WRAP)+":"+Base64.encodeToString(encrypted,Base64.NO_WRAP))
+  if(restoredTheme!=null) editor.putString("theme",restoredTheme)
+  check(editor.commit()) { "保存失败" }
  }
  fun theme()=prefs.getString("theme","system") ?: "system"
  fun theme(value: String) { check(prefs.edit().putString("theme",value).commit()) }
@@ -77,10 +99,18 @@ object QuotaApi {
  fun fetch(s: Site): Balance {
   val path=if(s.subscription) "/api/subscription/self" else if(s.account) "/api/user/self" else "/api/usage/token/"
   val balance=parse(s,read(s,path))
-  if(!s.account || s.subscription) return balance
+  if(!s.account && !s.subscription) return balance
   val day=usageDay()
-  val daily=runCatching { parseTodayUsage(read(s,"/api/log/self/stat?type=2&start_timestamp=${day.start}&end_timestamp=${day.end}")) }
-  return balance.copy(todayUsed=daily.getOrNull(),todayError=if(daily.isFailure) "今日消耗查询失败，请稍后刷新或检查统计接口权限" else null,todayDate=day.date)
+  if(s.subscription) {
+   if(balance.subscriptions.isEmpty()) return balance
+   val daily=runCatching { subscriptionTodayUsage(day) { read(s,it) } }
+   return balance.copy(subscriptions=balance.subscriptions.map { sub ->
+    val error=if(sub.id<=0) "今日订阅消耗：订阅信息缺少有效 ID" else daily.exceptionOrNull()?.let(::subscriptionUsageError)
+    sub.copy(todayUsed=if(error==null) daily.getOrThrow()[sub.id] ?: 0.0 else null,todayDate=day.date,todayError=error)
+   })
+  }
+  val daily=runCatching { walletTodayUsage(day) { read(s,it) } }
+  return balance.copy(todayUsed=daily.getOrNull(),todayError=daily.exceptionOrNull()?.let(::walletUsageError),todayDate=day.date)
  }
  fun parseTodayUsage(text: String): Double {
   val root=JSONObject(text)
@@ -165,16 +195,74 @@ object QuotaApi {
 
 class QuotaModel(app: Application): AndroidViewModel(app) {
  private val vault=Vault(app)
- private val mutable=MutableStateFlow(AppState())
+ private val mutable=MutableStateFlow(AppState(storageStatus=StorageStatus.LOADING))
  val state=mutable.asStateFlow()
- init { viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { AppState(sites=vault.read(), theme=vault.theme()) } }.fold({ mutable.value=it; refreshAll() },{ mutable.value=AppState(storageError="无法读取本地加密配置，请勿卸载应用；可尝试重新启动。") }) } }
+ private val storageLock=Mutex()
+ // Keep requests reserved until their results are published, even if queries are reset.
+ private val refreshing=java.util.Collections.synchronizedSet(mutableSetOf<Site>())
+ private var storageLoad: Job? = null
+ private suspend fun storageReady(): Boolean = state.first { it.storageStatus!=StorageStatus.LOADING }.storageStatus==StorageStatus.READY
+ init { retryStorage() }
+ fun retryStorage() {
+  if(storageLoad?.isActive==true || mutable.value.storageStatus==StorageStatus.READY) return
+  mutable.value=mutable.value.copy(storageStatus=StorageStatus.LOADING,storageError=null)
+  storageLoad=viewModelScope.launch {
+   val result=storageLock.withLock {
+    readStorageWithRetry(read={ withContext(Dispatchers.IO) {
+     AppState(sites=vault.read(),theme=storageStep(StorageStage.THEME) { vault.theme() })
+    } },onFailure={ attempt,diagnostic -> android.util.Log.w("QuotaStorage","read attempt=$attempt code=$diagnostic") })
+   }
+   result.fold({ mutable.value=it },{ error -> mutable.value=mutable.value.copy(storageStatus=StorageStatus.FAILED,storageError="无法读取本地加密配置，原数据已保留，已禁止覆盖。请勿卸载或清除应用数据；可点击重试。诊断：${storageDiagnostic(error)}") })
+   if(result.isSuccess) refreshAll()
+  }
+ }
  fun save(site: Site, done: (String?)->Unit) { viewModelScope.launch {
-  val list=mutable.value.sites.toMutableList(); val index=list.indexOfFirst { it.id==site.id }; if(index<0) list.add(site) else list[index]=site
-  val result=withContext(Dispatchers.IO) { runCatching { vault.write(list) } }
-  if(result.isSuccess) { mutable.value=mutable.value.copy(sites=list,queries=mutable.value.queries-site.id); done(null); refresh(site) } else done("保存失败，请重试")
+  if(!storageReady()) { done("本地配置读取失败，已阻止覆盖原数据，请点击重试读取"); return@launch }
+  val error=storageLock.withLock {
+   val list=mutable.value.sites.toMutableList(); val index=list.indexOfFirst { it.id==site.id }; if(index<0) list.add(site) else list[index]=site
+   val result=withContext(Dispatchers.IO) { runCatching { vault.write(list) } }
+   if(result.isSuccess) { mutable.value=mutable.value.copy(sites=list,queries=mutable.value.queries-site.id); null } else "保存失败，原配置未主动清除，请重试"
+  }
+  done(error)
+  if(error==null) refresh(site)
  } }
- fun delete(site: Site) { viewModelScope.launch { val list=mutable.value.sites.filterNot { it.id==site.id }; val ok=withContext(Dispatchers.IO) { runCatching { vault.write(list) }.isSuccess }; if(ok) mutable.value=mutable.value.copy(sites=list,queries=mutable.value.queries-site.id) else mutable.value=mutable.value.copy(storageError="删除失败，请重试") } }
- fun theme(value: String) { viewModelScope.launch { if(withContext(Dispatchers.IO) { runCatching { vault.theme(value) }.isSuccess }) mutable.value=mutable.value.copy(theme=value) } }
+ fun delete(site: Site) { viewModelScope.launch {
+  if(!storageReady()) return@launch
+  storageLock.withLock {
+   val list=mutable.value.sites.filterNot { it.id==site.id }
+   val ok=withContext(Dispatchers.IO) { runCatching { vault.write(list) }.isSuccess }
+   if(ok) mutable.value=mutable.value.copy(sites=list,queries=mutable.value.queries-site.id) else mutable.value=mutable.value.copy(storageError="删除失败，请重试")
+  }
+ } }
+ fun reorder(ids: List<String>, done: (Boolean)->Unit) { viewModelScope.launch {
+  if(!storageReady()) { done(false); return@launch }
+  val ok=storageLock.withLock {
+   val current=mutable.value.sites
+   val result=withContext(Dispatchers.IO) { runCatching {
+    val ordered=orderedSites(current,ids)
+    vault.write(ordered)
+    ordered
+   } }
+   result.fold({ mutable.value=mutable.value.copy(sites=it); true },{ mutable.value=mutable.value.copy(storageError="排序保存失败，已保留原顺序，请重试"); false })
+  }
+  done(ok)
+ } }
+ suspend fun backupSnapshot(): BackupData {
+  check(storageReady()) { "本地配置未能读取，无法备份" }
+  return storageLock.withLock { BackupData(mutable.value.sites.toList(),mutable.value.theme) }
+ }
+ suspend fun restoreBackup(data: BackupData): Boolean {
+  if(!storageReady()) return false
+  return storageLock.withLock {
+   val ok=withContext(Dispatchers.IO) { runCatching { vault.write(data.sites,data.theme) }.isSuccess }
+   if(ok) mutable.value=AppState(sites=data.sites,theme=data.theme)
+   ok
+  }
+ }
+ fun theme(value: String) { viewModelScope.launch {
+  if(!storageReady()) return@launch
+  storageLock.withLock { if(withContext(Dispatchers.IO) { runCatching { vault.theme(value) }.isSuccess }) mutable.value=mutable.value.copy(theme=value) }
+ } }
  fun advance(s: Site,id: Long) {
   val st=mutable.value
   val item=st.queries[s.id]?.balance?.subscriptions?.firstOrNull { it.id==id }
@@ -187,12 +275,44 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    if(current.sites.any { it==s }) refresh(s)
   }
  }
- fun refreshAll() { mutable.value.sites.forEach { refresh(it) } }
+ fun refreshError(t: Throwable): String = when(t) {
+  is javax.net.ssl.SSLException -> "安全连接失败，请检查站点证书"
+  is java.net.SocketTimeoutException -> "连接超时，请重试"
+  is java.net.UnknownHostException -> "无法解析站点地址"
+  is IllegalStateException, is IllegalArgumentException -> t.message ?: "查询失败，请检查站点配置"
+  else -> "查询失败，请检查网络与接口兼容性"
+ }
+ fun refreshAll() {
+  if(mutable.value.storageStatus!=StorageStatus.READY) return
+  viewModelScope.launch {
+   val initial=mutable.value
+   val sites=initial.sites.filter { it.id !in initial.advancing && refreshing.add(it) }
+   if(sites.isEmpty()) return@launch
+   val loading=sites.associate { it.id to (initial.queries[it.id] ?: QueryState()).copy(loading=true,error=null) }
+   mutable.value=initial.copy(queries=initial.queries+loading)
+   val results=sites.map { site -> async(Dispatchers.IO) { site.id to runCatching { QuotaApi.fetch(site) } } }.awaitAll().toMap()
+   refreshing.removeAll(sites.toSet())
+   val current=mutable.value
+   val queries=current.queries.toMutableMap(); val blocked=current.advanceBlocked.toMutableSet(); val notices=current.advanceNotices.toMutableMap()
+   sites.forEach { site ->
+    if(current.sites.none { it==site } || site.id in current.advancing) return@forEach
+    val result=results[site.id] ?: return@forEach
+    val old=queries[site.id]?.balance
+    queries[site.id]=result.fold({ QueryState(balance=it) },{ QueryState(balance=old,error=refreshError(it)) })
+    val previous=notices[site.id]
+    val notice=when { previous=="透支成功，正在刷新额度" -> if(result.isSuccess) "透支成功，额度已刷新" else "透支已成功，但额度刷新失败，请手动刷新"; result.isSuccess && previous!=null -> "状态已刷新，请核对已领取额度与抵扣时间"; else -> previous }
+    if(notice!=null) notices[site.id]=notice
+    if(result.isSuccess) blocked.remove(site.id)
+   }
+   mutable.value=mutable.value.copy(queries=queries,advanceBlocked=blocked,advanceNotices=notices)
+  }
+ }
  fun refresh(s: Site) {
-  if(mutable.value.queries[s.id]?.loading==true || s.id in mutable.value.advancing) return
+  if(mutable.value.storageStatus!=StorageStatus.READY || mutable.value.sites.none { it==s } || mutable.value.queries[s.id]?.loading==true || s.id in mutable.value.advancing || !refreshing.add(s)) return
   mutable.value=mutable.value.copy(queries=mutable.value.queries+(s.id to (mutable.value.queries[s.id] ?: QueryState()).copy(loading=true,error=null)))
   viewModelScope.launch {
    val result=withContext(Dispatchers.IO) { runCatching { QuotaApi.fetch(s) } }
+   refreshing.remove(s)
    if(mutable.value.sites.none { it==s }) return@launch
    val old=mutable.value.queries[s.id]?.balance
    val q=result.fold({ QueryState(balance=it) },{ QueryState(balance=old,error=when(it) { is javax.net.ssl.SSLException -> "安全连接失败，请检查站点证书"; is java.net.SocketTimeoutException -> "连接超时，请重试"; is java.net.UnknownHostException -> "无法解析站点地址"; is IllegalStateException, is IllegalArgumentException -> it.message; else -> "查询失败，请检查网络与接口兼容性" }) })

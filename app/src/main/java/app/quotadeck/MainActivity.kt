@@ -92,8 +92,16 @@ private val MaterialThemeColorFallback=Color.Transparent
  }
  }
  }) { insets ->
- Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().graphicsLayer { alpha=pageMotion.value; translationY=(1f-pageMotion.value)*6.dp.toPx() }.verticalScroll(scrolls[tab]).padding(horizontal=16.dp).padding(top=20.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
- Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(listOf("预览","额度","令牌","站点","设置")[tab],fontSize=30.sp,fontWeight=FontWeight.Bold); Spacer(Modifier.height(1.dp)); Secondary(listOf("New API · ${state.sites.size} 个站点","New API · ${state.sites.size} 个站点","管理模型调用令牌","管理地址与访问凭据","外观与本地数据")[tab]) }; if(tab<=1 || tab==3) IconButton(onClick={ if(tab<=1 && state.sites.isNotEmpty()) model.refreshAll() else adding=true }) { if(tab<=1 && state.sites.isNotEmpty()) RefreshGlyph(state.sites.any { state.queries[it.id]?.loading==true }) else LineIcon("添加") } }
+ Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().graphicsLayer { alpha=pageMotion.value; translationY=(1f-pageMotion.value)*6.dp.toPx() }.then(if(tab==3) Modifier else Modifier.verticalScroll(scrolls[tab])).padding(horizontal=16.dp).padding(top=20.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+ Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(listOf("预览","额度","令牌","站点","设置")[tab],fontSize=30.sp,fontWeight=FontWeight.Bold); Spacer(Modifier.height(1.dp)); Secondary(if(state.storageStatus==StorageStatus.LOADING) "正在读取本地配置" else if(state.storageStatus==StorageStatus.FAILED) "本地配置尚未读取" else listOf("New API · ${state.sites.size} 个站点","New API · ${state.sites.size} 个站点","管理模型调用令牌","管理地址与访问凭据","外观与本地数据")[tab]) }; if(state.storageStatus==StorageStatus.READY && (tab<=1 || tab==3)) IconButton(onClick={ if(tab<=1 && state.sites.isNotEmpty()) model.refreshAll() else adding=true }) { if(tab<=1 && state.sites.isNotEmpty()) RefreshGlyph(state.sites.any { state.queries[it.id]?.loading==true }) else LineIcon("添加") } }
+ if(state.storageStatus==StorageStatus.LOADING) Panel {
+  Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) { CircularProgressIndicator(Modifier.size(24.dp)); Text("正在读取本地配置") }
+  Secondary("读取失败时会自动重试，原配置不会被覆盖。")
+ } else if(state.storageStatus==StorageStatus.FAILED) Panel {
+  Text("本地配置读取失败",style=MaterialTheme.typography.titleLarge)
+  Text(state.storageError ?: "原配置已保留，请重试读取。")
+  Button(onClick=model::retryStorage) { Text("重试读取") }
+ } else {
  state.storageError?.let { Panel { Text(it) } }
  when(tab) {
  0 -> if(state.sites.isNotEmpty()) QuotaOverview(state) else Panel {
@@ -102,8 +110,9 @@ private val MaterialThemeColorFallback=Color.Transparent
  }
  1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance,onDelete=model::delete)
  2 -> Tokens(state,onRefreshQuota=model::refreshAll)
- 3 -> Sites(state,onAdd={adding=true},onEdit={editing=it})
- 4 -> Settings(state,onTheme=model::theme)
+ 3 -> Box(Modifier.weight(1f)) { Sites(state,onAdd={adding=true},onEdit={editing=it},onReorder=model::reorder) }
+ 4 -> { Settings(state,onTheme=model::theme); BackupPanel(model) }
+ }
  }
  }
  }
@@ -116,7 +125,7 @@ fun timestamp(time: Long)=SimpleDateFormat("MM-dd HH:mm",Locale.getDefault()).fo
  var expandedSite by remember { mutableStateOf<String?>(null) }
  deleting?.let { site -> SiteDeleteDialog(site,onDismiss={deleting=null},onDelete={onDelete(site); deleting=null; expandedSite=null}) }
  if(state.sites.isEmpty()) { Panel { LineIcon("额度",Modifier.size(36.dp)); Text("添加你的第一个站点",style=MaterialTheme.typography.titleLarge); Secondary("连接 New API，查看令牌额度或账户余额。"); Button(onClick=onAdd,modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") } }; return }
- state.sites.sortedByDescending { it.subscription }.forEach { site -> key(site.id) {
+ state.sites.forEach { site -> key(site.id) {
  val q=state.queries[site.id] ?: QueryState(); val b=q.balance
  SwipeSiteCard(site,expandedSite==site.id,onExpanded={expandedSite=if(it) site.id else null},onDelete={deleting=site}) {
  if(site.subscription) SubscriptionPanel(site,q,onRefresh,onAdvance,site.id in state.advancing,site.id in state.advanceBlocked,state.advanceNotices[site.id])
@@ -125,9 +134,10 @@ fun timestamp(time: Long)=SimpleDateFormat("MM-dd HH:mm",Locale.getDefault()).fo
  Column(verticalArrangement=Arrangement.spacedBy(4.dp)) { Secondary(if(site.account) "当前余额 · USD" else "剩余 · USD"); Text(if(b==null) "—" else if(b.unlimited) "无限额度" else "$ "+amount(b.remaining,site.unit),fontSize=30.sp,fontWeight=FontWeight.SemiBold) }
  if(site.account) {
   Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
-   Secondary("今日总消耗 · USD")
-   Text(todayUsageAmount(b,site.unit),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
-   Secondary("含钱包消费与订阅抵扣 · 按设备时区统计今日零点至本次查询")
+   Secondary("今日钱包消耗 · USD")
+   Text(if(q.error==null) todayUsageAmount(b,site.unit) else "—",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
+   Secondary("仅统计个人中心钱包扣款，不含订阅抵扣")
+   Secondary("按设备时区统计今日零点至本次查询")
    if(!q.loading && b!=null) {
     if(b.todayDate!=usageDay().date) Secondary("今日消耗待刷新")
     else b.todayError?.let { Secondary(it) }

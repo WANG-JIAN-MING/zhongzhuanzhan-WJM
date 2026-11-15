@@ -46,6 +46,12 @@ private fun advanceStatus(s: SubscriptionQuota,unit: Double): String = "提前�
  balance.subscriptions.forEachIndexed { i,s ->
  if(i>0) HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
  Text(s.title,style=MaterialTheme.typography.titleLarge)
+ Secondary("今日此订阅消耗 · USD")
+ Text(if(q.error==null) subscriptionTodayAmount(s,site.unit) else "—",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
+ if(!q.loading) {
+  s.todayError?.let { Secondary(it) }
+  if(s.todayError==null && s.todayDate!=usageDay().date) Secondary("今日消耗待刷新")
+ }
  SingleLineDetail("生效中 · 有效期 ${fullTime(s.start)} 至 ${fullTime(s.end)}")
  Secondary("当前周期剩余 · USD")
  Text(if(s.total==0.0) "不限额" else "$ "+amount(s.remaining,site.unit),fontSize=32.sp,fontWeight=FontWeight.SemiBold)

@@ -10,6 +10,6 @@ fun usageDay(nowMillis: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId
  return UsageDay(date.toString(),date.atStartOfDay(zone).toEpochSecond(),nowMillis/1000)
 }
 fun todayUsageAmount(balance: Balance?, unit: Double, day: UsageDay = usageDay()): String {
- val value=balance?.todayUsed?.takeIf { balance.todayDate==day.date } ?: return "—"
+ val value=balance?.todayUsed?.takeIf { balance.todayDate==day.date && balance.todayError==null } ?: return "—"
  return "$ "+amount(value,unit)
 }

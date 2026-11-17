@@ -137,12 +137,42 @@ data class NecoStartupSiteResult(
     val outcomeUnknown: Boolean = false
 )
 
-/** One invocation per ready startup; each mutating request is issued at most once. */
-class NecoStartupGate {
-    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
+/** saveClaimDate must synchronously persist the date before returning true. */
+interface NecoStartupStore {
+    fun lastClaimDate(): String?
+    fun saveClaimDate(date: String): Boolean
+}
+
+/** In-memory default for isolated callers/tests; Android startup supplies persistent storage. */
+private class MemoryNecoStartupStore : NecoStartupStore {
+    private var date: String? = null
+    override fun lastClaimDate(): String? = date
+    override fun saveClaimDate(date: String): Boolean { this.date = date; return true }
+}
+
+/** Claim the entire daily batch before requests, including batches that subsequently fail. */
+class NecoStartupGate(
+    private val store: NecoStartupStore = MemoryNecoStartupStore(),
+    private val today: () -> java.time.LocalDate = { java.time.LocalDate.now() }
+) {
+    // Shared across gate instances in this process; disk state survives process death/restart.
+    private companion object { val claimLock = Any() }
+    private val attemptedDates = mutableSetOf<String>()
     private val attemptedSites = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
-    fun claim(ready: Boolean): Boolean = ready && started.compareAndSet(false, true)
+    fun claim(ready: Boolean): Boolean {
+        if (!ready) return false
+        return synchronized(claimLock) {
+            val date = today().toString()
+            if (!attemptedDates.add(date)) return@synchronized false
+            // Fail closed on either a read error or an unsuccessful synchronous commit.
+            val saved = runCatching {
+                store.lastClaimDate() != date && store.saveClaimDate(date)
+            }.getOrDefault(false)
+            if (saved) attemptedSites.clear()
+            saved
+        }
+    }
 
     fun executeSite(site: Site, action: (Site, draw: Boolean) -> NecoActionResult): NecoStartupSiteResult {
         require(isNecoOrigin(site.url))

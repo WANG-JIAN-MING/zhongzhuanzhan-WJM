@@ -202,15 +202,20 @@ object QuotaApi {
  private fun java.io.Reader.readTextLimited(): String { val b=CharArray(4096); val out=StringBuilder(); while(true) { val n=read(b); if(n<0) break; out.append(b,0,n); require(out.length<=1048576) { "接口响应过大" } }; return out.toString() }
 }
 
+private class PersistentNecoStartupStore(app: Application) : NecoStartupStore {
+ private val prefs=app.getSharedPreferences("neco_startup_v1", 0)
+ override fun lastClaimDate(): String? = prefs.getString("claimed_local_date", null)
+ override fun saveClaimDate(date: String): Boolean = prefs.edit().putString("claimed_local_date", date).commit()
+}
+
 class QuotaModel(app: Application): AndroidViewModel(app) {
  private val vault=Vault(app)
  private val mutable=MutableStateFlow(AppState(storageStatus=StorageStatus.LOADING))
  val state=mutable.asStateFlow()
  private val storageLock=Mutex()
- // Serializes Neco actions with refresh and user-triggered pet operations.
+ // Only mutating Neco actions serialize; read-only quota/pet queries run concurrently.
  private val petOperationLock=Mutex()
- // Process-local claim also survives a new Activity/ViewModel in the same running process.
- private companion object { val startupPetGate=NecoStartupGate() }
+ private val startupPetGate=NecoStartupGate(PersistentNecoStartupStore(app))
  private var startupPetAllowed=false
  private var startupPetInProgress=false
  // Keep requests reserved until their results are published, even if queries are reset.
@@ -232,12 +237,12 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    }
    result.fold({ mutable.value=it },{ error -> mutable.value=mutable.value.copy(storageStatus=StorageStatus.FAILED,storageError="无法读取本地加密配置，原数据已保留，已禁止覆盖。请勿卸载或清除应用数据；可点击重试。诊断：${storageDiagnostic(error)}") })
    if(result.isSuccess) {
-    // Preserve immediate refresh for unrelated sites while Neco startup actions are running.
-    mutable.value.sites.filterNot { isNecoOrigin(it.url) }.forEach(::refresh)
     if(startupPetAllowed && !startupPetInProgress) {
      startupPetInProgress=true
-     runStartupPetActions(mutable.value.sites)
+     val sites=mutable.value.sites
+     viewModelScope.launch { runStartupPetActions(sites) }
     }
+    // Includes Neco immediately; no wait for signin/draws and no automatic follow-up refresh.
     refreshAll()
    }
   }
@@ -290,7 +295,9 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
   storageLock.withLock { if(withContext(Dispatchers.IO) { runCatching { vault.theme(value) }.isSuccess }) mutable.value=mutable.value.copy(theme=value) }
  } }
  private suspend fun runStartupPetActions(sites: List<Site>) {
-  if(!startupPetGate.claim(mutable.value.storageStatus==StorageStatus.READY)) return
+  // Even an empty target list consumes today's global startup batch. Persist before any request.
+  val claimed=withContext(Dispatchers.IO) { startupPetGate.claim(mutable.value.storageStatus==StorageStatus.READY) }
+  if(!claimed) return
   val targets=sites.filter { isNecoOrigin(it.url) }
   targets.forEach { site ->
    mutable.value=mutable.value.copy(pet=mutable.value.pet+(site.id to NecoPetState(loading=true)),petNotices=mutable.value.petNotices-site.id)
@@ -325,7 +332,7 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
   if(!isNecoOrigin(s.url) || st.storageStatus!=StorageStatus.READY || st.sites.none { it==s } || st.pet[s.id]?.loading==true || s.id in st.advancing) return
   mutable.value=st.copy(pet=st.pet+(s.id to (st.pet[s.id] ?: NecoPetState()).copy(loading=true,error=null)))
   viewModelScope.launch {
-   val result=withContext(Dispatchers.IO) { petOperationLock.withLock { runCatching { NecoPetApi.self(s) } } }
+   val result=withContext(Dispatchers.IO) { runCatching { NecoPetApi.self(s) } }
    if(mutable.value.sites.none { it==s }) return@launch
    mutable.value=mutable.value.copy(pet=mutable.value.pet+(s.id to result.fold({ it },{ NecoPetState(error=refreshError(it)) })))
   }
@@ -382,7 +389,7 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    if(sites.isEmpty()) return@launch
    val loading=sites.associate { it.id to (initial.queries[it.id] ?: QueryState()).copy(loading=true,error=null) }
    mutable.value=initial.copy(queries=initial.queries+loading)
-   val results=sites.map { site -> async(Dispatchers.IO) { site.id to runCatching { if(isNecoOrigin(site.url)) petOperationLock.withLock { QuotaApi.fetch(site) } else QuotaApi.fetch(site) } } }.awaitAll().toMap()
+   val results=sites.map { site -> async(Dispatchers.IO) { site.id to runCatching { QuotaApi.fetch(site) } } }.awaitAll().toMap()
    refreshing.removeAll(sites.toSet())
    val current=mutable.value
    val queries=current.queries.toMutableMap(); val blocked=current.advanceBlocked.toMutableSet(); val notices=current.advanceNotices.toMutableMap()
@@ -403,7 +410,7 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
   if(mutable.value.storageStatus!=StorageStatus.READY || mutable.value.sites.none { it==s } || mutable.value.queries[s.id]?.loading==true || s.id in mutable.value.advancing || !refreshing.add(s)) return
   mutable.value=mutable.value.copy(queries=mutable.value.queries+(s.id to (mutable.value.queries[s.id] ?: QueryState()).copy(loading=true,error=null)))
   viewModelScope.launch {
-   val result=withContext(Dispatchers.IO) { runCatching { if(isNecoOrigin(s.url)) petOperationLock.withLock { QuotaApi.fetch(s) } else QuotaApi.fetch(s) } }
+   val result=withContext(Dispatchers.IO) { runCatching { QuotaApi.fetch(s) } }
    refreshing.remove(s)
    if(mutable.value.sites.none { it==s }) return@launch
    val old=mutable.value.queries[s.id]?.balance

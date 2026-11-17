@@ -9,6 +9,101 @@ class NecoStartupTest {
     private val neco = Site(id = "neco", name = "Neco", url = "https://api.sbbbbbbbbb.xyz", key = "mock")
     private val other = Site(id = "other", name = "Other", url = "https://example.com", key = "mock")
 
+    private class FakeStartupStore : NecoStartupStore {
+        var date: String? = null
+        var saves = 0
+        var saveSucceeds = true
+        var readFails = false
+        var saveThrows = false
+        override fun lastClaimDate(): String? {
+            if (readFails) error("read failed")
+            return date
+        }
+        override fun saveClaimDate(date: String): Boolean {
+            saves++
+            if (saveThrows) error("commit failed")
+            if (saveSucceeds) this.date = date
+            return saveSucceeds
+        }
+    }
+
+    private val day = java.time.LocalDate.of(2026, 8, 12)
+
+    @Test fun sameLocalDateIsSavedOnlyOnce() {
+        val store = FakeStartupStore()
+        val gate = NecoStartupGate(store) { day }
+        assertFalse(gate.claim(false))
+        assertEquals(0, store.saves)
+        assertTrue(gate.claim(true))
+        assertEquals(day.toString(), store.date)
+        assertFalse(gate.claim(true))
+        assertEquals(1, store.saves)
+    }
+
+    @Test fun recreatedGateSkipsPersistedDateLikeProcessRestart() {
+        val store = FakeStartupStore()
+        assertTrue(NecoStartupGate(store) { day }.claim(true))
+        // New store instance reads only the previously persisted value, not gate memory.
+        val reopened = FakeStartupStore().apply { date = store.date }
+        assertFalse(NecoStartupGate(reopened) { day }.claim(true))
+        assertEquals(0, reopened.saves)
+    }
+
+    @Test fun nextLocalDateAllowsOneNewBatchAndSameSite() {
+        val store = FakeStartupStore()
+        var date = day
+        val gate = NecoStartupGate(store) { date }
+        var calls = 0
+        repeat(2) {
+            assertTrue(gate.claim(true))
+            gate.executeSite(neco) { _, _ -> calls++; NecoActionResult("ok") }
+            assertFalse(gate.claim(true))
+            date = date.plusDays(1)
+        }
+        assertEquals(8, calls)
+        assertEquals(day.plusDays(1).toString(), store.date)
+        assertEquals(2, store.saves)
+    }
+
+    @Test fun failedCommitPreventsRequestsAndSameGateRetry() {
+        val store = FakeStartupStore().apply { saveSucceeds = false }
+        val gate = NecoStartupGate(store) { day }
+        var calls = 0
+        if (gate.claim(true)) gate.executeSite(neco) { _, _ -> calls++; NecoActionResult("unexpected") }
+        store.saveSucceeds = true
+        assertFalse(gate.claim(true))
+        assertEquals(0, calls)
+        assertEquals(null, store.date)
+        assertEquals(1, store.saves)
+    }
+
+    @Test fun storageExceptionsFailClosed() {
+        val readFailure = FakeStartupStore().apply { readFails = true }
+        assertFalse(NecoStartupGate(readFailure) { day }.claim(true))
+        assertEquals(0, readFailure.saves)
+        val writeFailure = FakeStartupStore().apply { saveThrows = true }
+        assertFalse(NecoStartupGate(writeFailure) { day }.claim(true))
+        assertEquals(null, writeFailure.date)
+    }
+
+    @Test fun claimIsPersistedBeforeFirstRequestAndFailureStillConsumesDay() {
+        val store = FakeStartupStore()
+        val gate = NecoStartupGate(store) { day }
+        assertTrue(gate.claim(true))
+        val result = gate.executeSite(neco) { _, _ ->
+            assertEquals(day.toString(), store.date)
+            error("mock timeout")
+        }
+        assertTrue(result.outcomeUnknown)
+        assertFalse(NecoStartupGate(store) { day }.claim(true))
+    }
+
+    @Test fun emptyBatchStillConsumesGlobalDay() {
+        val store = FakeStartupStore()
+        assertTrue(NecoStartupGate(store) { day }.claim(true))
+        assertFalse(NecoStartupGate(store) { day }.claim(true))
+    }
+
     @Test fun onlyClaimsOnceAfterStorageReady() {
         val gate = NecoStartupGate()
         assertFalse(gate.claim(false))

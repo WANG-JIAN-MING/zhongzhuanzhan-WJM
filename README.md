@@ -1,6 +1,6 @@
 # 额度 / QuotaDeck
 
-Android New API 额度查询应用，当前版本 **1.0.43**（versionCode 44）。使用 Kotlin、Jetpack Compose 和 Material 3，支持 Android 8.0（API 26）及以上。
+Android New API 额度查询应用，当前版本 **1.0.44**（versionCode 45）。使用 Kotlin、Jetpack Compose 和 Material 3，支持 Android 8.0（API 26）及以上。
 
 ## 功能
 

@@ -35,7 +35,7 @@ fun normalizeBase(value: String): String {
  Surface(onClick={onTheme(pair.first)},color=MaterialTheme.colorScheme.surface) { Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(vertical=3.dp),verticalAlignment=Alignment.CenterVertically) { RadioButton(selected=state.theme==pair.first,onClick=null); Spacer(Modifier.width(12.dp)); Text(pair.second) } }
  }
  }
- Panel { Text("本地数据",style=MaterialTheme.typography.titleMedium); Secondary("站点地址和访问凭据使用 Android Keystore 加密保存，系统备份已关闭。应用向你配置的站点查询额度；令牌管理操作由你主动触发。"); HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant); Text("额度换算",style=MaterialTheme.typography.titleMedium); Secondary("每站可从 /api/status 读取 1 USD 对应的 quota，也可手动填写。Neco Api 当前按 USD 展示，默认换算值 500000。令牌不限额不代表所属账户余额无限。"); Secondary("额度 "+BuildConfig.VERSION_NAME) }
+ Secondary("版本 "+BuildConfig.VERSION_NAME)
 }
 @Composable fun SiteDialog(original: Site?,onDismiss:()->Unit,onSave:(Site,(String?)->Unit)->Unit,onDelete:(Site)->Unit) {
  var name by rememberSaveable { mutableStateOf(original?.name ?: "") }; var url by rememberSaveable { mutableStateOf(original?.url ?: "") }

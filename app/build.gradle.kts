@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
  namespace = "app.quotadeck"
  compileSdk = 35
- defaultConfig { applicationId = "app.quotadeck"; minSdk = 26; targetSdk = 35; versionCode = 36; versionName = "1.0.35" }
+ defaultConfig { applicationId = "app.quotadeck"; minSdk = 26; targetSdk = 35; versionCode = 43; versionName = "1.0.42" }
  buildFeatures { compose = true; buildConfig = true }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  kotlinOptions { jvmTarget = "17" }

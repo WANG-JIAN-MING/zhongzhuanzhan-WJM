@@ -29,12 +29,12 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 data class Site(val id: String = UUID.randomUUID().toString(), val name: String, val url: String, val key: String, val account: Boolean = false, val userId: String = "", val unit: Double = 500000.0, val subscription: Boolean = false, val cookie: String = "")
-data class Balance(val remaining: Double, val used: Double, val unlimited: Boolean, val time: Long, val expires: Long = -1, val subscriptions: List<SubscriptionQuota> = emptyList(), val todayUsed: Double? = null, val todayError: String? = null, val todayDate: String? = null)
+data class Balance(val remaining: Double, val used: Double, val unlimited: Boolean, val time: Long, val expires: Long = -1, val subscriptions: List<SubscriptionQuota> = emptyList(), val todayUsed: Double? = null, val todayError: String? = null, val todayDate: String? = null, val walletRemaining: Double? = null, val walletError: String? = null, val walletTodayUsed: Double? = null, val walletTodayError: String? = null, val walletTodayDate: String? = null)
 data class SubscriptionQuota(val title: String, val base: Double, val total: Double, val used: Double, val advance: Double, val nextReset: Long, val advanceReset: Long, val start: Long, val end: Long, val resetMode: String, val advanceMessage: String, val id: Long = 0, val canAdvance: Boolean = false, val todayUsed: Double? = null, val todayDate: String? = null, val todayError: String? = null) {
  val remaining: Double get()=(total-used).coerceAtLeast(0.0)
 }
 data class QueryState(val loading: Boolean = false, val balance: Balance? = null, val error: String? = null)
-data class AppState(val sites: List<Site> = emptyList(), val queries: Map<String, QueryState> = emptyMap(), val theme: String = "system", val storageError: String? = null, val advancing: Set<String> = emptySet(), val advanceNotices: Map<String,String> = emptyMap(), val advanceBlocked: Set<String> = emptySet(), val storageStatus: StorageStatus = StorageStatus.READY)
+data class AppState(val sites: List<Site> = emptyList(), val queries: Map<String, QueryState> = emptyMap(), val theme: String = "system", val storageError: String? = null, val advancing: Set<String> = emptySet(), val advanceNotices: Map<String,String> = emptyMap(), val advanceBlocked: Set<String> = emptySet(), val pet: Map<String,NecoPetState> = emptyMap(), val petNotices: Map<String,String> = emptyMap(), val storageStatus: StorageStatus = StorageStatus.READY)
 
 class Vault(app: Application) {
  private val prefs by lazy { app.getSharedPreferences("quota_v1", 0) }
@@ -96,18 +96,27 @@ object QuotaApi {
   require(unit.isFinite() && unit>0) { "站点换算值无效" }
   return unit
  }
- fun fetch(s: Site): Balance {
+ fun fetch(s: Site): Balance = fetch(s,usageDay()) { target,path -> read(target,path) }
+ // Inject the transport for offline endpoint/authentication and error-isolation tests.
+ internal fun fetch(s: Site, day: UsageDay, read: (Site,String) -> String): Balance {
   val path=if(s.subscription) "/api/subscription/self" else if(s.account) "/api/user/self" else "/api/usage/token/"
   val balance=parse(s,read(s,path))
   if(!s.account && !s.subscription) return balance
-  val day=usageDay()
   if(s.subscription) {
-   if(balance.subscriptions.isEmpty()) return balance
-   val daily=runCatching { subscriptionTodayUsage(day) { read(s,it) } }
-   return balance.copy(subscriptions=balance.subscriptions.map { sub ->
-    val error=if(sub.id<=0) "今日订阅消耗：订阅信息缺少有效 ID" else daily.exceptionOrNull()?.let(::subscriptionUsageError)
-    sub.copy(todayUsed=if(error==null) daily.getOrThrow()[sub.id] ?: 0.0 else null,todayDate=day.date,todayError=error)
-   })
+   // Keep this site's exact credentials; never borrow another account at the same origin.
+   val walletSite=s.copy(subscription=false,account=true)
+   val wallet=runCatching { parse(walletSite,read(walletSite,"/api/user/self")) }
+   val walletDaily=runCatching { walletTodayUsage(day) { read(walletSite,it) } }
+   val daily=runCatching { if(balance.subscriptions.isEmpty()) emptyMap() else subscriptionTodayUsage(day) { read(s,it) } }
+   return balance.copy(
+    walletRemaining=wallet.getOrNull()?.remaining,
+    walletError=wallet.exceptionOrNull()?.let(::subscriptionWalletError),
+    walletTodayUsed=walletDaily.getOrNull(),walletTodayDate=day.date,
+    walletTodayError=walletDaily.exceptionOrNull()?.let(::walletUsageError),
+    subscriptions=balance.subscriptions.map { sub ->
+     val error=if(sub.id<=0) "今日订阅消耗：订阅信息缺少有效 ID" else daily.exceptionOrNull()?.let(::subscriptionUsageError)
+     sub.copy(todayUsed=if(error==null) daily.getOrThrow()[sub.id] ?: 0.0 else null,todayDate=day.date,todayError=error)
+    })
   }
   val daily=runCatching { walletTodayUsage(day) { read(s,it) } }
   return balance.copy(todayUsed=daily.getOrNull(),todayError=daily.exceptionOrNull()?.let(::walletUsageError),todayDate=day.date)
@@ -198,11 +207,20 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
  private val mutable=MutableStateFlow(AppState(storageStatus=StorageStatus.LOADING))
  val state=mutable.asStateFlow()
  private val storageLock=Mutex()
+ // Serializes Neco actions with refresh and user-triggered pet operations.
+ private val petOperationLock=Mutex()
+ // Process-local claim also survives a new Activity/ViewModel in the same running process.
+ private companion object { val startupPetGate=NecoStartupGate() }
+ private var startupPetAllowed=false
+ private var startupPetInProgress=false
  // Keep requests reserved until their results are published, even if queries are reset.
  private val refreshing=java.util.Collections.synchronizedSet(mutableSetOf<Site>())
  private var storageLoad: Job? = null
  private suspend fun storageReady(): Boolean = state.first { it.storageStatus!=StorageStatus.LOADING }.storageStatus==StorageStatus.READY
  init { retryStorage() }
+ fun authorizeColdStartPetActions() {
+  if(mutable.value.storageStatus==StorageStatus.LOADING) startupPetAllowed=true
+ }
  fun retryStorage() {
   if(storageLoad?.isActive==true || mutable.value.storageStatus==StorageStatus.READY) return
   mutable.value=mutable.value.copy(storageStatus=StorageStatus.LOADING,storageError=null)
@@ -213,7 +231,15 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
     } },onFailure={ attempt,diagnostic -> android.util.Log.w("QuotaStorage","read attempt=$attempt code=$diagnostic") })
    }
    result.fold({ mutable.value=it },{ error -> mutable.value=mutable.value.copy(storageStatus=StorageStatus.FAILED,storageError="无法读取本地加密配置，原数据已保留，已禁止覆盖。请勿卸载或清除应用数据；可点击重试。诊断：${storageDiagnostic(error)}") })
-   if(result.isSuccess) refreshAll()
+   if(result.isSuccess) {
+    // Preserve immediate refresh for unrelated sites while Neco startup actions are running.
+    mutable.value.sites.filterNot { isNecoOrigin(it.url) }.forEach(::refresh)
+    if(startupPetAllowed && !startupPetInProgress) {
+     startupPetInProgress=true
+     runStartupPetActions(mutable.value.sites)
+    }
+    refreshAll()
+   }
   }
  }
  fun save(site: Site, done: (String?)->Unit) { viewModelScope.launch {
@@ -263,6 +289,72 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
   if(!storageReady()) return@launch
   storageLock.withLock { if(withContext(Dispatchers.IO) { runCatching { vault.theme(value) }.isSuccess }) mutable.value=mutable.value.copy(theme=value) }
  } }
+ private suspend fun runStartupPetActions(sites: List<Site>) {
+  if(!startupPetGate.claim(mutable.value.storageStatus==StorageStatus.READY)) return
+  val targets=sites.filter { isNecoOrigin(it.url) }
+  targets.forEach { site ->
+   mutable.value=mutable.value.copy(pet=mutable.value.pet+(site.id to NecoPetState(loading=true)),petNotices=mutable.value.petNotices-site.id)
+  }
+  val results=withContext(Dispatchers.IO) {
+   petOperationLock.withLock {
+    targets.mapNotNull { site ->
+     if(mutable.value.storageStatus!=StorageStatus.READY || mutable.value.sites.none { it==site }) return@mapNotNull null
+     site.id to runCatching { startupPetGate.executeSite(site) { target,draw -> if(draw) NecoPetApi.draw(target) else NecoPetApi.signin(target) } }
+    }.toMap()
+   }
+  }
+  targets.forEach { site ->
+   val result=results[site.id] ?: return@forEach
+   val notice=result.fold({ r ->
+    when {
+     r.outcomeUnknown -> "启动自动操作结果未知（${r.failedStage}）；未重试，请核实 Neco 页面"
+     r.failedStage!=null -> "启动自动操作被站点拒绝（${r.failedStage}）；已停止该站点后续抽奖"
+     else -> "启动自动签到 1 次、抽奖 ${r.draws.size} 次已完成"
+    }
+   },{ "启动自动操作请求结果未知；未重试，请核实 Neco 页面" })
+   val summary=result.getOrNull()
+   if(summary?.outcomeUnknown==true || result.isFailure) android.widget.Toast.makeText(getApplication(), "${site.name}：$notice", android.widget.Toast.LENGTH_LONG).show()
+   mutable.value=mutable.value.copy(
+    pet=mutable.value.pet+(site.id to NecoPetState(loading=false,message=summary?.draws?.lastOrNull()?.message)),
+    petNotices=mutable.value.petNotices+(site.id to notice)
+   )
+  }
+ }
+ fun refreshPet(s: Site) {
+  val st=mutable.value
+  if(!isNecoOrigin(s.url) || st.storageStatus!=StorageStatus.READY || st.sites.none { it==s } || st.pet[s.id]?.loading==true || s.id in st.advancing) return
+  mutable.value=st.copy(pet=st.pet+(s.id to (st.pet[s.id] ?: NecoPetState()).copy(loading=true,error=null)))
+  viewModelScope.launch {
+   val result=withContext(Dispatchers.IO) { petOperationLock.withLock { runCatching { NecoPetApi.self(s) } } }
+   if(mutable.value.sites.none { it==s }) return@launch
+   mutable.value=mutable.value.copy(pet=mutable.value.pet+(s.id to result.fold({ it },{ NecoPetState(error=refreshError(it)) })))
+  }
+ }
+ fun petAction(s: Site, draw: Boolean) {
+  val st=mutable.value
+  if(!isNecoOrigin(s.url) || st.storageStatus!=StorageStatus.READY || st.sites.none { it==s } || st.pet[s.id]?.loading==true || s.id in st.advancing || st.queries[s.id]?.loading==true) return
+  mutable.value=st.copy(pet=st.pet+(s.id to (st.pet[s.id] ?: NecoPetState()).copy(loading=true,error=null)),petNotices=st.petNotices-s.id)
+  viewModelScope.launch {
+   val result=withContext(Dispatchers.IO) { petOperationLock.withLock { runCatching { if(draw) NecoPetApi.draw(s) else NecoPetApi.signin(s) } } }
+   val current=mutable.value
+   if(current.sites.none { it==s }) return@launch
+   val state=result.fold({ action -> NecoPetState(loading=false,message=action.message) },{ error -> NecoPetState(loading=false,error=refreshError(error)) })
+   val notice=result.fold({ action ->
+    val detail=if(draw) action.reward?.text else action.message
+    when {
+     !action.success -> "站点拒绝了本次操作，请核实状态后再决定是否重试"
+     draw && action.reward==null -> "抽奖请求已返回但奖励字段不明确，请核实 Neco 页面后再决定是否操作"
+     detail!=null -> (if(draw) "抽奖结果：" else "签到结果：")+detail
+     else -> "操作已返回；请刷新核实状态"
+    }
+   },{ "操作结果未能确认，请先刷新 Neco 页面核实；不要立即重复提交" })
+   mutable.value=current.copy(pet=current.pet+(s.id to state),petNotices=current.petNotices+(s.id to notice))
+   if(result.isSuccess && result.getOrThrow().success) {
+    refresh(s)
+    refreshPet(s)
+   }
+  }
+ }
  fun advance(s: Site,id: Long) {
   val st=mutable.value
   val item=st.queries[s.id]?.balance?.subscriptions?.firstOrNull { it.id==id }
@@ -290,7 +382,7 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    if(sites.isEmpty()) return@launch
    val loading=sites.associate { it.id to (initial.queries[it.id] ?: QueryState()).copy(loading=true,error=null) }
    mutable.value=initial.copy(queries=initial.queries+loading)
-   val results=sites.map { site -> async(Dispatchers.IO) { site.id to runCatching { QuotaApi.fetch(site) } } }.awaitAll().toMap()
+   val results=sites.map { site -> async(Dispatchers.IO) { site.id to runCatching { if(isNecoOrigin(site.url)) petOperationLock.withLock { QuotaApi.fetch(site) } else QuotaApi.fetch(site) } } }.awaitAll().toMap()
    refreshing.removeAll(sites.toSet())
    val current=mutable.value
    val queries=current.queries.toMutableMap(); val blocked=current.advanceBlocked.toMutableSet(); val notices=current.advanceNotices.toMutableMap()
@@ -311,7 +403,7 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
   if(mutable.value.storageStatus!=StorageStatus.READY || mutable.value.sites.none { it==s } || mutable.value.queries[s.id]?.loading==true || s.id in mutable.value.advancing || !refreshing.add(s)) return
   mutable.value=mutable.value.copy(queries=mutable.value.queries+(s.id to (mutable.value.queries[s.id] ?: QueryState()).copy(loading=true,error=null)))
   viewModelScope.launch {
-   val result=withContext(Dispatchers.IO) { runCatching { QuotaApi.fetch(s) } }
+   val result=withContext(Dispatchers.IO) { runCatching { if(isNecoOrigin(s.url)) petOperationLock.withLock { QuotaApi.fetch(s) } else QuotaApi.fetch(s) } }
    refreshing.remove(s)
    if(mutable.value.sites.none { it==s }) return@launch
    val old=mutable.value.queries[s.id]?.balance

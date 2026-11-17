@@ -40,7 +40,7 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity: ComponentActivity() {
- override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); enableEdgeToEdge(); setContent { val model: QuotaModel=viewModel(); val state by model.state.collectAsStateWithLifecycle(); QuotaTheme(state.theme) { QuotaApp(model,state) } } }
+ override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); enableEdgeToEdge(); val model=androidx.lifecycle.ViewModelProvider(this)[QuotaModel::class.java]; if(savedInstanceState==null) model.authorizeColdStartPetActions(); setContent { val state by model.state.collectAsStateWithLifecycle(); QuotaTheme(state.theme) { QuotaApp(model,state) } } }
 }
 @Composable fun QuotaTheme(mode: String, content: @Composable ()->Unit) {
  val dark=mode=="dark" || mode=="system" && isSystemInDarkTheme()
@@ -108,7 +108,7 @@ private val MaterialThemeColorFallback=Color.Transparent
   Text("尚未添加站点",style=MaterialTheme.typography.titleLarge)
   Button(onClick={adding=true},modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") }
  }
- 1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance,onDelete=model::delete)
+ 1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance,onDelete=model::delete,onPetRefresh=model::refreshPet,onPetAction=model::petAction)
  2 -> Tokens(state,onRefreshQuota=model::refreshAll)
  3 -> Box(Modifier.weight(1f)) { Sites(state,onAdd={adding=true},onEdit={editing=it},onReorder=model::reorder) }
  4 -> { Settings(state,onTheme=model::theme); BackupPanel(model) }
@@ -120,7 +120,7 @@ private val MaterialThemeColorFallback=Color.Transparent
 }
 fun amount(value: Double,unit: Double)=String.format(Locale.US,"%,.2f",value/unit)
 fun timestamp(time: Long)=SimpleDateFormat("MM-dd HH:mm",Locale.getDefault()).format(Date(time))
-@Composable fun Home(state: AppState,onAdd:()->Unit,onRefresh:(Site)->Unit,onAdvance:(Site,Long)->Unit,onDelete:(Site)->Unit) {
+@Composable fun Home(state: AppState,onAdd:()->Unit,onRefresh:(Site)->Unit,onAdvance:(Site,Long)->Unit,onDelete:(Site)->Unit,onPetRefresh:(Site)->Unit={},onPetAction:(Site,Boolean)->Unit={_,_->}) {
  var deleting by remember { mutableStateOf<Site?>(null) }
  var expandedSite by remember { mutableStateOf<String?>(null) }
  deleting?.let { site -> SiteDeleteDialog(site,onDismiss={deleting=null},onDelete={onDelete(site); deleting=null; expandedSite=null}) }

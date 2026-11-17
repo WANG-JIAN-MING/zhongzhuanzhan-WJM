@@ -1,6 +1,6 @@
 # 额度 / QuotaDeck
 
-Android New API 额度查询应用，当前版本 **1.0.35**（versionCode 36）。使用 Kotlin、Jetpack Compose 和 Material 3，支持 Android 8.0（API 26）及以上。
+Android New API 额度查询应用，当前版本 **1.0.42**（versionCode 43）。使用 Kotlin、Jetpack Compose 和 Material 3，支持 Android 8.0（API 26）及以上。
 
 ## 功能
 
@@ -13,10 +13,13 @@ Android New API 额度查询应用，当前版本 **1.0.35**（versionCode 36）
 - 额度卡片支持左滑露出删除按钮，确认后仅移除本地配置及凭据，不删除远程账户或令牌。移除可能重复计数的汇总金额。
 - 页面、导航、刷新状态及数值更新采用克制的过渡动画；令牌管理卡片采用紧凑间距。
 - 三种独立查询模式：令牌额度、个人中心账户余额、订阅当日 / 周期用量。
+- 1.0.38 修复订阅预览重复站点名和多余空行：标题、站点金额、套餐按同一三列排列；站点名仅出现一次，首套餐行同时显示中列钱包今日、右列套餐今日，底部保留进度条。金额列按测量宽度对齐，左右等宽使钱包列居中；名称按可用宽度缩小字号，保持完整单行。钱包标题位于余额上方，钱包及套餐消耗仅显示金额，不带“今日”前缀。包含 320dp Compose @Preview（示例钱包 $200.00 / 今日 $3.42，订阅剩余 $18.00 / 套餐今日 $2.15）；未运行 Android 真机视觉验证。
+- 订阅同时使用原站点凭据以 `Site.copy(subscription=false, account=true)` 查询 `/api/user/self` 并校验账户 ID，将 `quota` 存入独立 `walletRemaining`；订阅剩余仅来自 `/api/subscription/self`。钱包今日与套餐今日分别读取并分类消费明细，分别保存金额、日期、错误；钱包余额或日志失败仅对应位置显示“—”及不可用原因，不丢弃订阅结果。无订阅套餐时仍查询钱包。不会按 origin 借用其他账户数据，也不合并已有个人中心配置。
 - 预览页集中显示站点额度。账户条目同一行显示名称、红色今日消耗和当前余额；卡片顶部显示刷新动画。额度页个人中心卡片同时展示账户余额和今日钱包消耗，明确排除订阅抵扣；查询失败不显示旧的今日消耗。
 - 个人中心今日消耗分页读取 `/api/log/self?type=2`（去掉末尾斜杠，避免 Neco 返回 301；统计失败按站点显示安全分类后的具体原因），按设备时区统计当天零点至本次查询。优先读取 `other.wallet_quota_deducted`，否则仅累计 `other.billing_source=wallet` 的消费，排除订阅抵扣。缺少计费来源、分页不完整或接口失败时显示“—”，不回退到混合总消费，不影响账户余额。最多读取 100 页，每页请求 100 条。
 - 预览和额度页按订阅分别显示今日消耗：按设备时区，以消费明细的 `billing_source=subscription` 和 `subscription_id` 关联，优先使用 `subscription_consumed`（保留合法零值），缺失时使用该订阅消费日志的 quota；排除钱包消费，不按同名套餐合并。缺少来源或订阅 ID 时显示原因，不返回部分总额。订阅展示基础额度、提前领取、周期已用与剩余、有效期及刷新时间；服务端允许时可在确认后透支次日额度，结果不明确时不自动重试。
 - 支持 Neco Api 同站网页登录绑定用户 ID 和会话，亦可手工配置访问凭据。模型调用令牌通常不能用于账户和订阅查询。
+- 每次全新冷启动在本地配置成功读取为 READY 后，对所有精确匹配 Neco origin 的站点后台自动签到 1 次，签到成功后按顺序抽奖最多 3 次；同一启动流程只触发一次，不因 Compose 重组、存储读取重试或 Activity 进程状态恢复重复触发。抽奖可能扣费；任何网络异常均不重试该请求并停止该站剩余抽奖，提示结果未知；服务端明确失败也停止该站抽奖。不同站点即使凭据相同仍逐站处理。Neco 签到/抽奖界面已隐藏，非 Neco 站点不执行这些操作。
 - 金额按站点 quota 换算配置显示两位小数，默认 500000 quota = 1 USD；可从 `/api/status` 读取换算值。
 
 ## 使用与存储
@@ -37,6 +40,16 @@ Android New API 额度查询应用，当前版本 **1.0.35**（versionCode 36）
 
 输出：`app/build/outputs/apk/debug/app-debug.apk`。Debug 签名由构建机器生成，另一机器构建的 APK 不保证能覆盖已安装版本。
 
-当前源码最近验证：135 项单元测试通过；Lint 0 错误、8 条警告。尚未使用真实账户验证令牌管理、统计值、订阅透支及设备界面交互，构建通过不代表真实联调通过。
+验证包括启动 READY 门控、每站防重、签到及最多三次抽奖顺序、签到/抽奖异常不重试、业务失败停止、非 Neco 过滤等 mock 测试；新增订阅钱包 mock 验证 user/self 与 subscription/self 额度分离、钱包与订阅日志独立、钱包余额/两路日志错误隔离、用户 ID 不匹配、同 origin 不同身份、空订阅及过期结果，以及个人中心和令牌原有请求行为。Lint 结果及本次构建耗时见下方本机构建记录。构建不调用真实账户，未安装或启动真机验证；构建通过不代表真实联调通过。后台结果未知通过 Toast 提示并保留内部 petNotices，签到/抽奖交互已隐藏。
 
 协议参考：[QuantumNous/new-api](https://github.com/QuantumNous/new-api) 及 Neco Api 当前公开前端。不同部署的接口和权限可能存在差异。
+
+## 1.0.38 本机构建记录
+
+使用 `/var/minis/workspace/build-quota.sh`，其设置 JDK 21、SDK、ARM64 aapt2 及 `LD_PRELOAD=/opt/minis-build/compat/jvm_mmap.so`，执行 `assembleDebug testDebugUnitTest lintDebug`。
+
+- 第一次：155 秒，APK 编译成功；154 项测试中新增 mock 的一条认证模式预期写错，失败 1 项（已修正）；既有测试无失败。
+- 第二次：131 秒，构建、单元测试与 lint 全部通过；154 项测试，0 失败、0 错误、0 跳过（JUnit 各用例合计 0.871 秒），lint 0 错误、8 条警告。
+- APK：`/var/minis/workspace/QuotaDeck-1.0.38-preview-fixed.apk`，包名 `app.quotadeck`，versionName `1.0.38`，versionCode `39`，minSdk 26 / targetSdk 35；apksigner 验证 v2 Debug 签名通过。
+- APK SHA-256：`2dc81e79d9b15d4c166d161971ebf1664feedf6990944302c05fb016ce30e74a`。
+- 已检查用户截图并构造可编译的 320dp Compose @Preview；本机缺少完整 layoutlib 渲染运行库，未渲染 Compose 截图、未安装启动真机、未请求真实账户接口。没有改动启动签到抽奖逻辑，没有提交或推送。

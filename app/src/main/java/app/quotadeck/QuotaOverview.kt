@@ -81,7 +81,7 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
  return balance.walletTodayUsed?.takeIf { balance.walletTodayError==null && balance.walletTodayDate==day.date }?.let { "$"+amount(it,unit) } ?: "—"
 }
 
-@Composable private fun SubscriptionSummaryRow(middleWidth: Dp, rightWidth: Dp, left: String, middle: String, right: String, style: TextStyle, label: Boolean=false) {
+@Composable private fun SubscriptionSummaryRow(middleWidth: Dp, rightWidth: Dp, left: String, middle: String, right: String, style: TextStyle, label: Boolean=false, consumed: Boolean=false) {
  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically) {
   val nameMeasurer=rememberTextMeasurer()
   val nameDensity=LocalDensity.current
@@ -90,8 +90,9 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
   val nameScale=if(namePixels>0) (availablePixels/namePixels).coerceIn(.1f,1f) else 1f
   Text(left,Modifier.width(rightWidth),style=style.copy(fontSize=(style.fontSize.value*nameScale).sp),maxLines=1,softWrap=false)
   val color=if(label) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
-  Text(middle,Modifier.width(middleWidth),style=style,color=color,maxLines=1,softWrap=false,textAlign=TextAlign.Center)
-  Text(right,Modifier.width(rightWidth),style=style,color=color,maxLines=1,softWrap=false,textAlign=TextAlign.End)
+  val consumedColor=if(MaterialTheme.colorScheme.surface.luminance()<0.5f) Color(0xFFFF8A80) else Color(0xFFB3261E)
+  Text(middle,Modifier.width(middleWidth),style=style,color=if(consumed && middle.isNotEmpty()) consumedColor else color,maxLines=1,softWrap=false,textAlign=TextAlign.Center)
+  Text(right,Modifier.width(rightWidth),style=style,color=if(consumed && right.isNotEmpty()) consumedColor else color,maxLines=1,softWrap=false,textAlign=TextAlign.End)
  }
 }
 
@@ -120,9 +121,9 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
    SubscriptionSummaryRow(middleWidth,rightWidth,"站点名称","钱包","剩余额度",fittedStyle,label=true)
    SubscriptionSummaryRow(middleWidth,rightWidth,site.name,walletText,balance,fittedStyle)
    if(subs.isEmpty()) {
-    SubscriptionSummaryRow(middleWidth,rightWidth,"",walletToday,"",fittedStyle)
+    SubscriptionSummaryRow(middleWidth,rightWidth,"",walletToday,"",fittedStyle,consumed=true)
    } else subs.forEachIndexed { index,sub ->
-    SubscriptionSummaryRow(middleWidth,rightWidth,sub.title,if(index==0) walletToday else "",dailyTexts[index],fittedStyle)
+    SubscriptionSummaryRow(middleWidth,rightWidth,sub.title,if(index==0) walletToday else "",dailyTexts[index],fittedStyle,consumed=true)
    }
    if(query?.error==null) {
     query?.balance?.walletError?.let { Text(it,style=style,color=MaterialTheme.colorScheme.error) }

@@ -18,9 +18,9 @@ import kotlinx.coroutines.withContext
 import java.text.NumberFormat
 
 @Composable
-internal fun UsageLogScreen(sites: List<Site>, onBack: () -> Unit) {
+internal fun UsageLogScreen(sites: List<Site>, initialSiteId: String? = null, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
-    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedId by rememberSaveable(initialSiteId) { mutableStateOf(initialSiteId) }
     var selecting by remember { mutableStateOf(false) }
     val site = sites.firstOrNull { it.id == selectedId } ?: sites.firstOrNull()
 

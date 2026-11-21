@@ -60,6 +60,7 @@ class MainActivity: ComponentActivity() {
  "站点" -> { drawCircle(tint,9*u,Offset(12*u,12*u),style=stroke); drawOval(tint,Offset(8*u,3*u),Size(8*u,18*u),style=stroke); line(3f,12f,21f,12f) }
  "设置" -> { listOf(6f,12f,18f).forEachIndexed { i,y -> line(3f,y,21f,y); drawCircle(tint,2.2f*u,Offset((if(i==1)8 else 16)*u,y*u),style=stroke) } }
  "添加" -> { line(12f,4f,12f,20f); line(4f,12f,20f,12f) }
+ "使用日志" -> { drawRoundRect(tint,Offset(5*u,3*u),Size(14*u,18*u),CornerRadius(2*u),style=stroke); line(8f,8f,16f,8f); line(8f,12f,16f,12f); line(8f,16f,13f,16f) }
  "刷新" -> { drawArc(tint,40f,290f,false,Offset(4*u,4*u),Size(16*u,16*u),style=stroke); line(20f,3f,20f,9f); line(14f,9f,20f,9f) }
  else -> { val p=Path().apply { moveTo(8*u,4*u); lineTo(16*u,12*u); lineTo(8*u,20*u) }; drawPath(p,tint,style=stroke) }
  }
@@ -78,11 +79,16 @@ private val MaterialThemeColorFallback=Color.Transparent
 @Composable fun QuotaApp(model: QuotaModel,state: AppState) {
  var tab by rememberSaveable { mutableIntStateOf(0) }; var editing by remember { mutableStateOf<Site?>(null) }; var adding by rememberSaveable { mutableStateOf(false) }
  var showingUsageLogs by rememberSaveable { mutableStateOf(false) }
+ var usageLogSiteId by rememberSaveable { mutableStateOf<String?>(null) }
+ val openUsageLogs: (String?) -> Unit = { siteId ->
+  usageLogSiteId = siteId
+  showingUsageLogs = true
+ }
  val scrolls=listOf(rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState())
  val pageMotion=remember { Animatable(1f) }
  LaunchedEffect(tab) { pageMotion.snapTo(0f); pageMotion.animateTo(1f,tween(200,easing=FastOutSlowInEasing)) }
  if (showingUsageLogs && state.storageStatus == StorageStatus.READY) {
-  UsageLogScreen(state.sites, onBack = { showingUsageLogs = false })
+  UsageLogScreen(state.sites, initialSiteId = usageLogSiteId, onBack = { showingUsageLogs = false })
   return
  }
  BackHandler(enabled=tab!=0 && !adding && editing==null) { tab=0 }
@@ -151,13 +157,13 @@ private val MaterialThemeColorFallback=Color.Transparent
  } else {
  state.storageError?.let { Panel { Text(it) } }
  when(tab) {
- 0 -> if(state.sites.isNotEmpty()) QuotaOverview(state) else Panel {
+ 0 -> if(state.sites.isNotEmpty()) QuotaOverview(state, onOpenUsageLogs = openUsageLogs) else Panel {
   Text("尚未添加站点",style=MaterialTheme.typography.titleLarge)
   Button(onClick={adding=true},modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") }
  }
  1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance,onDelete=model::delete,onPetRefresh=model::refreshPet,onPetAction=model::petAction)
  2 -> {
-  OutlinedButton(onClick = { showingUsageLogs = true }, enabled = state.sites.isNotEmpty()) { Text("使用日志") }
+  OutlinedButton(onClick = { openUsageLogs(null) }, enabled = state.sites.isNotEmpty()) { Text("使用日志") }
   Tokens(state,onRefreshQuota=model::refreshAll)
  }
  3 -> Box(Modifier.weight(1f)) { Sites(state,onAdd={adding=true},onEdit={editing=it},onReorder=model::reorder) }

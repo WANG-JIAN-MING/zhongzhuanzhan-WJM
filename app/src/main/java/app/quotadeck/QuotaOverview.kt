@@ -1,5 +1,6 @@
 package app.quotadeck
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -8,6 +9,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
@@ -37,7 +41,7 @@ fun overviewProgress(query: QueryState?): Float? {
  return (b.used/total).toFloat().coerceIn(0f,1f)
 }
 
-@Composable fun QuotaOverview(state: AppState) {
+@Composable fun QuotaOverview(state: AppState, onOpenUsageLogs: (String) -> Unit) {
  Panel(spacing=10.dp) {
   AnimatedVisibility(visible=state.sites.any { state.queries[it.id]?.loading==true },enter=fadeIn(tween(160))+expandVertically(tween(200)),exit=fadeOut(tween(120))+shrinkVertically(tween(180))) {
    Row(Modifier.fillMaxWidth().padding(vertical=3.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -47,9 +51,12 @@ fun overviewProgress(query: QueryState?): Float? {
   }
   state.sites.forEach { site ->
    Column(Modifier.fillMaxWidth().padding(vertical=3.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-    if(site.account && !site.subscription) AccountOverviewRow(site,state.queries[site.id]) else if(site.subscription) SubscriptionOverview(site,state.queries[site.id]) else {
+    val openLogs = { onOpenUsageLogs(site.id) }
+    if(site.account && !site.subscription) AccountOverviewRow(site,state.queries[site.id],openLogs)
+    else if(site.subscription) SubscriptionOverview(site,state.queries[site.id],openLogs)
+    else {
      Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-      Text(site.name,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge)
+      SiteLogShortcut(site.name, MaterialTheme.typography.bodyLarge, openLogs, Modifier.weight(1f))
       GentleValue(overviewAmount(site,state.queries[site.id]),style=MaterialTheme.typography.titleMedium.copy(fontWeight=FontWeight.SemiBold))
      }
      val progress=overviewProgress(state.queries[site.id])
@@ -81,14 +88,37 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
  return balance.walletTodayUsed?.takeIf { balance.walletTodayError==null && balance.walletTodayDate==day.date }?.let { "$"+amount(it,unit) } ?: "—"
 }
 
-@Composable private fun SubscriptionSummaryRow(middleWidth: Dp, rightWidth: Dp, left: String, middle: String, right: String, style: TextStyle, label: Boolean=false, consumed: Boolean=false) {
+private val logIconSize = 16.dp
+private val logIconGap = 4.dp
+
+@Composable
+private fun SiteLogShortcut(name: String, style: TextStyle, onClick: () -> Unit, modifier: Modifier = Modifier) {
+ Row(
+  modifier.clickable(role = Role.Button, onClickLabel = "查看使用日志", onClick = onClick)
+   .semantics { contentDescription = "查看${name}的使用日志" }
+   .heightIn(min = 32.dp),
+  horizontalArrangement = Arrangement.spacedBy(logIconGap),
+  verticalAlignment = Alignment.CenterVertically
+ ) {
+  Text(name, Modifier.weight(1f, fill = false), style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)
+  LineIcon("使用日志", Modifier.size(logIconSize), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+ }
+}
+
+@Composable private fun SubscriptionSummaryRow(middleWidth: Dp, rightWidth: Dp, left: String, middle: String, right: String, style: TextStyle, label: Boolean=false, consumed: Boolean=false, onOpenLogs: (() -> Unit)? = null) {
  Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically) {
   val nameMeasurer=rememberTextMeasurer()
   val nameDensity=LocalDensity.current
   val namePixels=nameMeasurer.measure(left,style=style,softWrap=false).size.width
-  val availablePixels=with(nameDensity) { rightWidth.toPx() }
+  val nameWidth = if (onOpenLogs == null) rightWidth else (rightWidth - logIconSize - logIconGap).coerceAtLeast(0.dp)
+  val availablePixels=with(nameDensity) { nameWidth.toPx() }
   val nameScale=if(namePixels>0) (availablePixels/namePixels).coerceIn(.1f,1f) else 1f
-  Text(left,Modifier.width(rightWidth),style=style.copy(fontSize=(style.fontSize.value*nameScale).sp),maxLines=1,softWrap=false)
+  val nameStyle = style.copy(fontSize = (style.fontSize.value * nameScale).sp)
+  if (onOpenLogs == null) {
+   Text(left, Modifier.width(rightWidth), style = nameStyle, maxLines = 1, softWrap = false)
+  } else {
+   SiteLogShortcut(left, nameStyle, onOpenLogs, Modifier.width(rightWidth))
+  }
   val color=if(label) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
   val consumedColor=if(MaterialTheme.colorScheme.surface.luminance()<0.5f) Color(0xFFFF8A80) else Color(0xFFB3261E)
   Text(middle,Modifier.width(middleWidth),style=style,color=if(consumed && middle.isNotEmpty()) consumedColor else color,maxLines=1,softWrap=false,textAlign=TextAlign.Center)
@@ -96,7 +126,7 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
  }
 }
 
-@Composable private fun SubscriptionOverview(site: Site, query: QueryState?) {
+@Composable private fun SubscriptionOverview(site: Site, query: QueryState?, onOpenLogs: () -> Unit) {
  val balance=overviewAmount(site,query).replace("$ ","$")
  val walletText=subscriptionWalletAmount(query,site.unit)
  val walletToday=subscriptionWalletTodayAmount(query,site.unit)
@@ -119,7 +149,7 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
   val fittedStyle=style.copy(fontSize=(style.fontSize.value*scale).sp)
   Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(3.dp)) {
    SubscriptionSummaryRow(middleWidth,rightWidth,"站点名称","钱包","剩余额度",fittedStyle,label=true)
-   SubscriptionSummaryRow(middleWidth,rightWidth,site.name,walletText,balance,fittedStyle)
+   SubscriptionSummaryRow(middleWidth,rightWidth,site.name,walletText,balance,fittedStyle,onOpenLogs=onOpenLogs)
    if(subs.isEmpty()) {
     SubscriptionSummaryRow(middleWidth,rightWidth,"",walletToday,"",fittedStyle,consumed=true)
    } else subs.forEachIndexed { index,sub ->
@@ -141,11 +171,11 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
  val day=usageDay().date
  val sub=SubscriptionQuota("Pro月度套餐",10000.0,10000.0,8200.0,0.0,0,0,0,0,"calendar","",id=1,todayUsed=215.0,todayDate=day)
  MaterialTheme { Surface { Box(Modifier.padding(20.dp)) {
-  SubscriptionOverview(Site(name="Claude服务",url="https://example.invalid",key="",subscription=true,unit=100.0),QueryState(balance=Balance(1800.0,8200.0,false,0,subscriptions=listOf(sub),walletRemaining=20000.0,walletTodayUsed=342.0,walletTodayDate=day)))
+  SubscriptionOverview(Site(name="Claude服务",url="https://example.invalid",key="",subscription=true,unit=100.0),QueryState(balance=Balance(1800.0,8200.0,false,0,subscriptions=listOf(sub),walletRemaining=20000.0,walletTodayUsed=342.0,walletTodayDate=day)), onOpenLogs = {})
  } } }
 }
 
-@Composable private fun AccountOverviewRow(site: Site, query: QueryState?) {
+@Composable private fun AccountOverviewRow(site: Site, query: QueryState?, onOpenLogs: () -> Unit) {
  val daily=if(query?.error==null) todayUsageAmount(query?.balance,site.unit) else "—"
  val dailyText="今日 $daily"
  val balance=overviewAmount(site,query)
@@ -156,10 +186,10 @@ fun subscriptionWalletTodayAmount(query: QueryState?, unit: Double, day: UsageDa
  val red=if(MaterialTheme.colorScheme.surface.luminance()<0.5f) Color(0xFFFF8A80) else Color(0xFFB3261E)
  BoxWithConstraints(Modifier.fillMaxWidth()) {
   val amountWidth=measurer.measure(dailyText,style=dailyStyle,softWrap=false).size.width+measurer.measure(balance,style=balanceStyle,softWrap=false).size.width
-  val available=with(density) { (maxWidth-56.dp).toPx() }.coerceAtLeast(1f)
+  val available=with(density) { (maxWidth-56.dp-logIconSize-logIconGap).toPx() }.coerceAtLeast(1f)
   val factor=if(amountWidth>0) (available/amountWidth).coerceIn(0.1f,1f) else 1f
   Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-   Text(site.name,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge,maxLines=1,overflow=TextOverflow.Ellipsis)
+   SiteLogShortcut(site.name, MaterialTheme.typography.bodyLarge, onOpenLogs, Modifier.weight(1f))
    GentleValue(dailyText,style=dailyStyle.copy(fontSize=(dailyStyle.fontSize.value*factor).sp),color=if(daily=="—") MaterialTheme.colorScheme.onSurfaceVariant else red)
    GentleValue(balance,style=balanceStyle.copy(fontSize=(balanceStyle.fontSize.value*factor).sp))
   }

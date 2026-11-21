@@ -22,8 +22,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -51,7 +54,7 @@ class MainActivity: ComponentActivity() {
 @Composable fun LineIcon(kind: String, modifier: Modifier=Modifier, tint: Color=MaterialTheme.colorScheme.onSurface) {
  Canvas(modifier.size(22.dp)) { val u=size.width/24; val stroke=Stroke(1.5f*u); fun line(x:Float,y:Float,a:Float,b:Float)=drawLine(tint,Offset(x*u,y*u),Offset(a*u,b*u),1.5f*u)
  when(kind) {
- "预览" -> { drawRoundRect(tint,Offset(3*u,4*u),Size(18*u,16*u),androidx.compose.ui.geometry.CornerRadius(3*u),style=stroke); line(3f,10f,21f,10f); line(10f,10f,10f,20f) }
+ "首页" -> { drawRoundRect(tint,Offset(3*u,4*u),Size(18*u,16*u),androidx.compose.ui.geometry.CornerRadius(3*u),style=stroke); line(3f,10f,21f,10f); line(10f,10f,10f,20f) }
  "额度" -> { drawRoundRect(tint,Offset(3*u,4*u),Size(18*u,16*u),androidx.compose.ui.geometry.CornerRadius(3*u),style=stroke); line(7f,9f,17f,9f); line(7f,14f,12f,14f) }
  "令牌" -> { drawCircle(tint,4*u,Offset(8*u,8*u),style=stroke); line(11f,11f,21f,21f); line(16f,16f,19f,13f); line(19f,19f,22f,16f) }
  "站点" -> { drawCircle(tint,9*u,Offset(12*u,12*u),style=stroke); drawOval(tint,Offset(8*u,3*u),Size(8*u,18*u),style=stroke); line(3f,12f,21f,12f) }
@@ -74,25 +77,69 @@ private val MaterialThemeColorFallback=Color.Transparent
 @Composable fun Secondary(text: String) { Text(text,color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium) }
 @Composable fun QuotaApp(model: QuotaModel,state: AppState) {
  var tab by rememberSaveable { mutableIntStateOf(0) }; var editing by remember { mutableStateOf<Site?>(null) }; var adding by rememberSaveable { mutableStateOf(false) }
+ var showingUsageLogs by rememberSaveable { mutableStateOf(false) }
  val scrolls=listOf(rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState(),rememberScrollState())
  val pageMotion=remember { Animatable(1f) }
  LaunchedEffect(tab) { pageMotion.snapTo(0f); pageMotion.animateTo(1f,tween(200,easing=FastOutSlowInEasing)) }
+ if (showingUsageLogs && state.storageStatus == StorageStatus.READY) {
+  UsageLogScreen(state.sites, onBack = { showingUsageLogs = false })
+  return
+ }
  BackHandler(enabled=tab!=0 && !adding && editing==null) { tab=0 }
  Scaffold(containerColor=MaterialTheme.colorScheme.background,bottomBar={
  Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp,vertical=12.dp),contentAlignment=Alignment.Center) {
  Surface(shape=RoundedCornerShape(50),color=MaterialTheme.colorScheme.surface,border=BorderStroke(0.7.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.widthIn(max=480.dp).fillMaxWidth()) {
- Row(Modifier.padding(8.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)) { listOf("预览","额度","令牌","站点","设置").forEachIndexed { i,title ->
- val selected=tab==i
- val navBackground by animateColorAsState(if(selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,tween(180),label="nav background")
- val navForeground by animateColorAsState(if(selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,tween(180),label="nav foreground")
- Surface(onClick={ tab=i },shape=RoundedCornerShape(50),color=navBackground,contentColor=navForeground,modifier=Modifier.weight(1f)) {
- Column(Modifier.heightIn(min=56.dp).padding(horizontal=4.dp,vertical=10.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(4.dp)) { LineIcon(title,tint=LocalContentColor.current); Text(title,style=MaterialTheme.typography.labelMedium) }
+ val titles = listOf("首页", "额度", "令牌", "站点", "设置")
+ val itemSpacing = 4.dp
+ val capsuleColor = MaterialTheme.colorScheme.primary
+ val capsulePosition by animateFloatAsState(
+  targetValue = tab.toFloat(),
+  animationSpec = tween(200, easing = FastOutSlowInEasing),
+  label = "navigation capsule"
+ )
+ Row(
+  Modifier.padding(8.dp).drawBehind {
+   val gap = itemSpacing.roundToPx()
+   val itemWidth = ((size.width - gap * (titles.size - 1)) / titles.size).coerceAtLeast(0f)
+   val position = if (layoutDirection == LayoutDirection.Rtl) titles.lastIndex - capsulePosition else capsulePosition
+   drawRoundRect(
+    color = capsuleColor,
+    topLeft = Offset(position * (itemWidth + gap), 0f),
+    size = Size(itemWidth, size.height),
+    cornerRadius = CornerRadius(minOf(itemWidth, size.height) / 2f)
+   )
+  },
+  horizontalArrangement = Arrangement.spacedBy(itemSpacing)
+ ) {
+  titles.forEachIndexed { i, title ->
+   val navForeground = if (kotlin.math.abs(capsulePosition - i) < 0.5f) {
+    MaterialTheme.colorScheme.onPrimary
+   } else {
+    MaterialTheme.colorScheme.onSurfaceVariant
+   }
+   Surface(
+    selected = tab == i,
+    onClick = { tab = i },
+    shape = RoundedCornerShape(50),
+    color = Color.Transparent,
+    contentColor = navForeground,
+    modifier = Modifier.weight(1f)
+   ) {
+    Column(
+     Modifier.heightIn(min = 56.dp).padding(horizontal = 4.dp, vertical = 10.dp),
+     horizontalAlignment = Alignment.CenterHorizontally,
+     verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+     LineIcon(title, tint = LocalContentColor.current)
+     Text(title, style = MaterialTheme.typography.labelMedium)
+    }
+   }
+  }
  }
- } }
  }
  }
  }) { insets ->
- Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().graphicsLayer { alpha=pageMotion.value; translationY=(1f-pageMotion.value)*6.dp.toPx() }.then(if(tab==3) Modifier else Modifier.verticalScroll(scrolls[tab])).padding(horizontal=16.dp).padding(top=20.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+ Column(Modifier.padding(insets).consumeWindowInsets(insets).fillMaxSize().graphicsLayer { alpha=pageMotion.value }.then(if(tab==3) Modifier else Modifier.verticalScroll(scrolls[tab])).padding(horizontal=16.dp).padding(top=20.dp,bottom=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
  Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(listOf("预览","额度","令牌","站点","设置")[tab],fontSize=30.sp,fontWeight=FontWeight.Bold); Spacer(Modifier.height(1.dp)); Secondary(if(state.storageStatus==StorageStatus.LOADING) "正在读取本地配置" else if(state.storageStatus==StorageStatus.FAILED) "本地配置尚未读取" else listOf("New API · ${state.sites.size} 个站点","New API · ${state.sites.size} 个站点","管理模型调用令牌","管理地址与访问凭据","外观与备份")[tab]) }; if(state.storageStatus==StorageStatus.READY && (tab<=1 || tab==3)) IconButton(onClick={ if(tab<=1 && state.sites.isNotEmpty()) model.refreshAll() else adding=true }) { if(tab<=1 && state.sites.isNotEmpty()) RefreshGlyph(state.sites.any { state.queries[it.id]?.loading==true }) else LineIcon("添加") } }
  if(state.storageStatus==StorageStatus.LOADING) Panel {
   Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) { CircularProgressIndicator(Modifier.size(24.dp)); Text("正在读取本地配置") }
@@ -109,7 +156,10 @@ private val MaterialThemeColorFallback=Color.Transparent
   Button(onClick={adding=true},modifier=Modifier.heightIn(min=48.dp)) { Text("添加站点") }
  }
  1 -> Home(state,onAdd={adding=true},onRefresh={model.refresh(it)},onAdvance=model::advance,onDelete=model::delete,onPetRefresh=model::refreshPet,onPetAction=model::petAction)
- 2 -> Tokens(state,onRefreshQuota=model::refreshAll)
+ 2 -> {
+  OutlinedButton(onClick = { showingUsageLogs = true }, enabled = state.sites.isNotEmpty()) { Text("使用日志") }
+  Tokens(state,onRefreshQuota=model::refreshAll)
+ }
  3 -> Box(Modifier.weight(1f)) { Sites(state,onAdd={adding=true},onEdit={editing=it},onReorder=model::reorder) }
  4 -> { Settings(state,onTheme=model::theme); BackupPanel(model) }
  }

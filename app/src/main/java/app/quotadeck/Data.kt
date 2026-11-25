@@ -96,7 +96,10 @@ object QuotaApi {
   require(unit.isFinite() && unit>0) { "站点换算值无效" }
   return unit
  }
- fun fetch(s: Site): Balance = fetch(s,usageDay()) { target,path -> read(target,path) }
+ fun fetch(s: Site, onCredentials: (Site)->Unit = {}): Balance {
+  val session=AccountSession(s,{ target,path -> read(target,path) },::requestSessionRenewal,onCredentials)
+  return fetch(s,usageDay(),session::read)
+ }
  // Inject the transport for offline endpoint/authentication and error-isolation tests.
  internal fun fetch(s: Site, day: UsageDay, read: (Site,String) -> String): Balance {
   val path=if(s.subscription) "/api/subscription/self" else if(s.account) "/api/user/self" else "/api/usage/token/"
@@ -137,7 +140,7 @@ object QuotaApi {
    if((s.account || s.subscription) && s.userId.isNotBlank()) conn.setRequestProperty("New-Api-User",s.userId)
    conn.setRequestProperty("Accept","application/json")
    val code=conn.responseCode
-   if(code !in 200..299) throw IllegalStateException(when(code) { 401 -> "未授权：请检查凭据"; 403 -> "无访问权限，请检查用户 ID 或站点限制"; in 300..399 -> "接口发生重定向，请填写最终站点地址"; 429 -> "请求过于频繁，请稍后重试"; else -> "服务器返回 HTTP $code" })
+   if(code !in 200..299) throw QuotaHttpException(code,when(code) { 401 -> "未授权：请检查凭据"; 403 -> "无访问权限，请检查用户 ID 或站点限制"; in 300..399 -> "接口发生重定向，请填写最终站点地址"; 429 -> "请求过于频繁，请稍后重试"; else -> "服务器返回 HTTP $code" })
    val text=conn.inputStream.bufferedReader().use { it.readTextLimited() }
    return text
   } finally { conn.disconnect() }
@@ -389,13 +392,13 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    if(sites.isEmpty()) return@launch
    val loading=sites.associate { it.id to (initial.queries[it.id] ?: QueryState()).copy(loading=true,error=null) }
    mutable.value=initial.copy(queries=initial.queries+loading)
-   val results=sites.map { site -> async(Dispatchers.IO) { site.id to runCatching { QuotaApi.fetch(site) } } }.awaitAll().toMap()
+   val results=sites.map { site -> async { site.id to fetchAndPersistSession(site) } }.awaitAll().toMap()
    refreshing.removeAll(sites.toSet())
    val current=mutable.value
    val queries=current.queries.toMutableMap(); val blocked=current.advanceBlocked.toMutableSet(); val notices=current.advanceNotices.toMutableMap()
    sites.forEach { site ->
-    if(current.sites.none { it==site } || site.id in current.advancing) return@forEach
-    val result=results[site.id] ?: return@forEach
+    val (published,result)=results[site.id] ?: return@forEach
+    if(current.sites.none { it==published } || site.id in current.advancing) return@forEach
     val old=queries[site.id]?.balance
     queries[site.id]=result.fold({ QueryState(balance=it) },{ QueryState(balance=old,error=refreshError(it)) })
     val previous=notices[site.id]
@@ -406,13 +409,35 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    mutable.value=mutable.value.copy(queries=queries,advanceBlocked=blocked,advanceNotices=notices)
   }
  }
+ private suspend fun fetchAndPersistSession(s: Site): Pair<Site,Result<Balance>> {
+   var renewed: Site?=null
+   var result=withContext(Dispatchers.IO) { runCatching { QuotaApi.fetch(s) { renewed=it } } }
+   var published=s
+   // Persist rotation even if the retry failed. Never let an old request undo an edit.
+   val credentials=renewed
+   if(credentials!=null) storageLock.withLock {
+    val list=renewedSites(mutable.value.sites,s,credentials)
+    if(list!=null) {
+     val saved=withContext(Dispatchers.IO) { runCatching { vault.write(list) }.isSuccess }
+     if(saved) {
+      mutable.value=mutable.value.copy(sites=list)
+      published=credentials
+     } else {
+      val message="登录会话已续期，但更新凭据保存失败，请重试或重新网页登录绑定"
+      mutable.value=mutable.value.copy(storageError=message)
+      result=Result.failure(IllegalStateException(message))
+     }
+    }
+   }
+   return published to result
+ }
  fun refresh(s: Site) {
   if(mutable.value.storageStatus!=StorageStatus.READY || mutable.value.sites.none { it==s } || mutable.value.queries[s.id]?.loading==true || s.id in mutable.value.advancing || !refreshing.add(s)) return
   mutable.value=mutable.value.copy(queries=mutable.value.queries+(s.id to (mutable.value.queries[s.id] ?: QueryState()).copy(loading=true,error=null)))
   viewModelScope.launch {
-   val result=withContext(Dispatchers.IO) { runCatching { QuotaApi.fetch(s) } }
+   val (published,result)=fetchAndPersistSession(s)
    refreshing.remove(s)
-   if(mutable.value.sites.none { it==s }) return@launch
+   if(mutable.value.sites.none { it==published }) return@launch
    val old=mutable.value.queries[s.id]?.balance
    val q=result.fold({ QueryState(balance=it) },{ QueryState(balance=old,error=when(it) { is javax.net.ssl.SSLException -> "安全连接失败，请检查站点证书"; is java.net.SocketTimeoutException -> "连接超时，请重试"; is java.net.UnknownHostException -> "无法解析站点地址"; is IllegalStateException, is IllegalArgumentException -> it.message; else -> "查询失败，请检查网络与接口兼容性" }) })
    val previousNotice=mutable.value.advanceNotices[s.id]

@@ -48,18 +48,22 @@ fun isNecoOrigin(value: String?): Boolean = isLoginOrigin(value,"https://api.sbb
  val credentials=runCatching {
  val decoded=org.json.JSONTokener(result).nextValue() as? String ?: "{}"
  val user=JSONObject(decoded); val id=user.optString("id"); val token=user.optString("token").ifBlank { observedToken.get() }
- val cookie=CookieManager.getInstance().getCookie(origin) ?: ""
+ val manager=CookieManager.getInstance()
+ // A refresh cookie may be scoped to /api/user/auth and absent at the root URL.
+ val cookie=mergeCookieHeaders(manager.getCookie(origin).orEmpty(),manager.getCookie("$origin/api/user/auth/refresh").orEmpty())
+ manager.flush()
  require(cookie.isNotBlank() || token.isNotBlank())
  Triple(id,token,cookie)
  }.getOrNull()
  if(credentials==null) {reading=false; error="未读取到登录状态。请登录并进入个人中心，再点完成绑定。"}
  else scope.launch {
  val (id,token,cookie)=credentials
+ var bound=Site(name="登录验证",url=origin,key=token,account=true,userId=id,cookie=cookie)
  val verified=withContext(Dispatchers.IO) { runCatching {
- QuotaApi.fetch(Site(name="登录验证",url=origin,key=token,account=true,userId=id,cookie=cookie))
+ QuotaApi.fetch(bound) { bound=it }
  } }
  reading=false
- verified.fold({onBound(id,token,cookie)}, {error="未能验证账户钱包：登录可能已过期，或本站不兼容 New API / One API 账户接口。可返回重试或使用手动凭据。"})
+ verified.fold({onBound(bound.userId,bound.key,bound.cookie)}, {error="未能验证账户钱包：登录可能已过期，或本站不兼容 New API / One API 账户接口。可返回重试或使用手动凭据。"})
  }
  }
  }

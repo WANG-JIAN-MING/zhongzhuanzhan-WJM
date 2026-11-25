@@ -63,11 +63,14 @@ fun normalizeBase(value: String): String {
  Text("将保存："+when(queryMode) { "account" -> "个人中心当前余额"; "subscription" -> "订阅用量"; else -> "令牌额度" },style=MaterialTheme.typography.bodySmall)
  if(account && !subscription) Secondary("显示个人设置中的当前余额，读取用户账户 quota，不包含订阅额度或模型令牌限额。请使用与网页相同的账户登录。")
  if(subscription) Secondary("读取“我的订阅”的已用、剩余、提前领取与下次刷新时间。使用用户访问令牌和用户 ID，不是 sk- 模型密钥。")
- if(isNecoOrigin(url) && (account || subscription)) {
- OutlinedButton(onClick={webLogin=true},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) { Text("Neco 网页登录 / 重新绑定") }
+ if(account) {
+ OutlinedButton(enabled=!saving,onClick={
+ val base=runCatching { normalizeBase(url) }.getOrNull()
+ if(base==null) error="请输入有效的 HTTPS 站点地址" else { url=base; webLogin=true }
+ },modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) { Text("登录站点 / 重新绑定") }
  Secondary(if(cookie.isNotBlank()) (if(subscription) "已绑定网页登录状态，保存后查询订阅" else "已绑定网页登录状态，保存后查询当前余额") else "推荐网页登录，自动绑定会话与用户 ID，无需手动寻找令牌。")
  }
- OutlinedTextField(key,{key=it},label={Text(if(account) "用户管理访问令牌" else "模型令牌 · sk-…")},visualTransformation=PasswordVisualTransformation(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.fillMaxWidth())
+ OutlinedTextField(key,{key=it},label={Text(if(account) "账户访问令牌 · 手动绑定时填写" else "模型令牌 · sk-…")},visualTransformation=PasswordVisualTransformation(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.fillMaxWidth())
  if(account) { OutlinedTextField(userId,{userId=it},label={Text("用户 ID · 旧版兼容")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),singleLine=true,modifier=Modifier.fillMaxWidth()); Secondary("使用面板的用户管理凭据，不是模型调用密钥。新版站点用户 ID 可留空。") }
  OutlinedTextField(unit,{unit=it},label={Text("每 1 USD 对应 quota")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal),singleLine=true,modifier=Modifier.fillMaxWidth())
  OutlinedButton(enabled=!detecting && !saving,onClick={
@@ -87,6 +90,6 @@ fun normalizeBase(value: String): String {
  error=when { name.isBlank() -> "请输入站点名称"; parsed==null || parsed.scheme!="https" || parsed.host.isNullOrBlank() || parsed.userInfo!=null || parsed.query!=null || parsed.fragment!=null -> "请输入有效的 HTTPS 站点地址"; (secret.isBlank() && !(cookie.isNotBlank() && cookieOrigin==clean && (account || subscription))) || secret.any { it.isWhitespace() } -> "请完成网页登录或输入有效访问令牌"; userId.isNotBlank() && (userId.toLongOrNull() ?: 0)<=0 -> "用户 ID 应为正整数"; rate==null || !rate.isFinite() || rate<=0 -> "quota 换算值应大于 0"; else -> null }
  if(error==null) { saving=true; onSave(Site(original?.id ?: java.util.UUID.randomUUID().toString(),name.trim(),clean,secret,account,userId.trim(),rate!!,subscription,if(cookieOrigin==clean && (account || subscription)) cookie else "")) { error=it; saving=false } }
  }) { Text(if(saving) "保存中" else "保存并查询") }},dismissButton={TextButton(onClick=onDismiss,enabled=!saving) {Text("取消")}})
- if(webLogin) NecoLogin(onDismiss={webLogin=false},onBound={id,token,session -> userId=id; key=token; cookie=session; cookieOrigin=runCatching { normalizeBase(url) }.getOrDefault(url); webLogin=false; error=null })
+ if(webLogin) SiteWebLogin(origin=normalizeBase(url),onDismiss={webLogin=false},onBound={id,token,session -> userId=id; key=token; cookie=session; cookieOrigin=runCatching { normalizeBase(url) }.getOrDefault(url); webLogin=false; error=null })
  if(confirmDelete && original!=null) AlertDialog(onDismissRequest={confirmDelete=false},containerColor=MaterialTheme.colorScheme.surface,tonalElevation=0.dp,title={Text("删除 ${original.name}？")},text={Text("将移除此站点在本机保存的地址与凭据。")},confirmButton={TextButton(onClick={onDelete(original)}) {Text("删除")}},dismissButton={TextButton(onClick={confirmDelete=false}) {Text("取消")}})
 }

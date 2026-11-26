@@ -15,7 +15,7 @@ class StorageRecoveryTest {
   assertEquals(sites,result.getOrThrow())
   assertEquals(3,attempts)
   assertEquals(listOf(400L,1200L),waits)
-  assertEquals(listOf("KEYSTORE/SECURITY","KEYSTORE/SECURITY"),diagnostics)
+  assertEquals(listOf("KEYSTORE/SECURITY/KEYSTORE_ERROR","KEYSTORE/SECURITY/KEYSTORE_ERROR"),diagnostics)
  }
  @Test fun permanentFailureStopsAtThreeReads() = runBlocking {
   var attempts=0
@@ -42,6 +42,15 @@ class StorageRecoveryTest {
    readStorageWithRetry(read={ attempts++; throw CancellationException("cancel") },onFailure={ _,_ -> fail("Cancellation was logged") },pause={ fail("Cancellation was retried") })
    fail("Expected cancellation")
   } catch(_: CancellationException) { assertEquals(1,attempts) }
+ }
+ @Test fun missingKeyIsDistinctFromUnavailableProvider() {
+  assertEquals("KEYSTORE/KEY_MISSING",storageDiagnostic(StorageReadException(StorageStage.KEYSTORE,StorageKeyMissingException())))
+  assertEquals("KEYSTORE/KEY_UNAVAILABLE/PROVIDER_ERROR",storageDiagnostic(StorageReadException(StorageStage.KEYSTORE,StorageKeyUnavailableException(java.security.ProviderException("private")))))
+ }
+ @Test fun wrappedSecurityFailuresRetainSafeReasonOnly() {
+  val error=StorageReadException(StorageStage.KEYSTORE,StorageKeyUnavailableException(java.security.UnrecoverableKeyException("secret").apply { initCause(SecurityException("cookie")) }))
+  assertEquals("KEYSTORE/KEY_UNAVAILABLE/ACCESS_DENIED",storageDiagnostic(error))
+  assertFalse(error.message!!.contains("secret"))
  }
  @Test fun diagnosticNeverIncludesExceptionText() {
   val secret="Bearer abc cookie=value https://secret.example"

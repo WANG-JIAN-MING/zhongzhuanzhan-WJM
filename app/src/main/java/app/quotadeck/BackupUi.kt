@@ -11,7 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@Composable fun BackupPanel(model: QuotaModel) {
+@Composable fun BackupPanel(model: QuotaModel, recoveryMode: Boolean = false) {
  val context=LocalContext.current
  val scope=rememberCoroutineScope()
  var busy by remember { mutableStateOf(false) }
@@ -40,22 +40,22 @@ import kotlinx.coroutines.withContext
   }
  }
  Panel {
-  Text("备份与恢复",style=MaterialTheme.typography.titleMedium)
-  Secondary("备份包含站点地址、访问凭据、排列顺序和外观设置，文件不加密，可用于重装或换机。文件中包含明文凭据，请妥善保管。余额和查询缓存不备份。")
+  Text(if(recoveryMode) "从备份恢复站点" else "备份与恢复",style=MaterialTheme.typography.titleMedium)
+  Secondary(if(recoveryMode) "选择此前导出的备份。恢复后将以备份站点替换当前配置；原无法读取的加密数据会保留副本。" else "备份包含站点地址、访问凭据、排列顺序和外观设置，文件不加密，可用于重装或换机。文件中包含明文凭据，请妥善保管。余额和查询缓存不备份。")
   Row(horizontalArrangement=Arrangement.spacedBy(androidx.compose.ui.unit.Dp(12f))) {
-   Button(enabled=!busy && restored==null,onClick={ busy=true; message=""; scope.launch {
+   if(!recoveryMode) Button(enabled=!busy && restored==null,onClick={ busy=true; message=""; scope.launch {
     try {
      val snapshot=model.backupSnapshot()
      exportBytes=withContext(Dispatchers.Default) { BackupCodec.encode(snapshot) }
      export.launch("QuotaDeck-${java.text.SimpleDateFormat("yyyyMMdd-HHmmss",java.util.Locale.US).format(java.util.Date())}.qdbackup")
     } catch(_: Exception) { busy=false; message="备份失败，请确认本地数据可读取" }
    } }) { Text("导出备份") }
-   OutlinedButton(enabled=!busy && restored==null,onClick={ busy=true; message=""; pick.launch(arrayOf("*/*")) }) { Text("恢复备份") }
+   OutlinedButton(enabled=!busy && restored==null,onClick={ busy=true; message=""; pick.launch(arrayOf("*/*")) }) { Text(if(recoveryMode) "选择备份文件" else "恢复备份") }
   }
   if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
   if(message.isNotEmpty()) Text(message)
  }
  restored?.let { data -> AlertDialog(onDismissRequest={if(!busy) restored=null},title={Text("确认恢复备份")},text={Text("备份包含 ${data.sites.size} 个站点，将替换当前全部站点、凭据、顺序及外观设置。此操作不会修改远程账户。")},confirmButton={TextButton(enabled=!busy,onClick={busy=true;scope.launch {
-  val ok=model.restoreBackup(data); restored=null;busy=false;message=if(ok) "已恢复 ${data.sites.size} 个站点，请刷新查询最新额度" else "保存失败，未完成恢复，请重启应用后重试"
+  val ok=if(recoveryMode) model.restoreBackupAfterStorageFailure(data) else model.restoreBackup(data); restored=null;busy=false;message=if(ok) "已恢复 ${data.sites.size} 个站点，请刷新查询最新额度" else "保存失败，未完成恢复，请重启应用后重试"
  }}){Text("替换并恢复")}},dismissButton={TextButton(enabled=!busy,onClick={restored=null}){Text("取消")}}) }
 }

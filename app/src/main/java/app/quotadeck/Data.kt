@@ -1,6 +1,7 @@
 package app.quotadeck
 
 import android.app.Application
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -36,15 +37,29 @@ data class SubscriptionQuota(val title: String, val base: Double, val total: Dou
 data class QueryState(val loading: Boolean = false, val balance: Balance? = null, val error: String? = null)
 data class AppState(val sites: List<Site> = emptyList(), val queries: Map<String, QueryState> = emptyMap(), val theme: String = "system", val storageError: String? = null, val advancing: Set<String> = emptySet(), val advanceNotices: Map<String,String> = emptyMap(), val advanceBlocked: Set<String> = emptySet(), val pet: Map<String,NecoPetState> = emptyMap(), val petNotices: Map<String,String> = emptyMap(), val storageStatus: StorageStatus = StorageStatus.READY)
 
-class Vault(app: Application) {
- private val prefs by lazy { app.getSharedPreferences("quota_v1", 0) }
+class Vault private constructor(
+ preferences: () -> SharedPreferences,
+ private val encryptOverride: ((String, Boolean) -> String)?
+) {
+ constructor(app: Application): this({ app.getSharedPreferences("quota_v1", 0) },null)
+ // Exercise the real write/restore paths offline without an Android Keystore.
+ internal constructor(prefs: SharedPreferences, encrypt: (String, Boolean) -> String): this({ prefs },encrypt)
+ private val prefs by lazy(preferences)
  private fun key(create: Boolean): SecretKey {
-  val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-  (store.getKey("quota_sites_v1", null) as? SecretKey)?.let { return it }
-  check(create) { "本地加密密钥不可用，已保留原配置" }
-  return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+  val store = try { KeyStore.getInstance("AndroidKeyStore").apply { load(null) } }
+   catch (e: Exception) { throw StorageKeyUnavailableException(e) }
+  val exists = try { store.containsAlias("quota_sites_v1") }
+   catch (e: Exception) { throw StorageKeyUnavailableException(e) }
+  if(exists) {
+   val stored = try { store.getKey("quota_sites_v1", null) as? SecretKey }
+    catch (e: Exception) { throw StorageKeyUnavailableException(e) }
+   return stored ?: throw StorageKeyUnavailableException(IllegalStateException())
+  }
+  if(!create) throw StorageKeyMissingException()
+  return try { KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
    init(KeyGenParameterSpec.Builder("quota_sites_v1", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
   }.generateKey()
+  } catch (e: Exception) { throw StorageKeyUnavailableException(e) }
  }
  fun read(): List<Site> {
   val raw = storageStep(StorageStage.PREFERENCES) { prefs.getString("sites", null) } ?: return emptyList()
@@ -65,12 +80,34 @@ class Vault(app: Application) {
   }
  }
  fun write(sites: List<Site>, restoredTheme: String? = null) {
-  val a=JSONArray(); sites.forEach { s -> a.put(JSONObject().put("id",s.id).put("name",s.name).put("url",s.url).put("key",s.key).put("account",s.account).put("userId",s.userId).put("unit",s.unit).put("subscription",s.subscription).put("cookie",s.cookie)) }
+  val plaintext=serializeSites(sites)
   // Existing ciphertext must remain readable before it may be replaced.
   if(prefs.contains("sites")) read()
-  val c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key(create = !prefs.contains("sites")))
-  val encrypted=c.doFinal(a.toString().toByteArray(Charsets.UTF_8))
-  val editor=prefs.edit().putString("sites", Base64.encodeToString(c.iv,Base64.NO_WRAP)+":"+Base64.encodeToString(encrypted,Base64.NO_WRAP))
+  commitSites(plaintext,restoredTheme)
+ }
+ fun restoreAfterReadFailure(sites: List<Site>, restoredTheme: String) {
+  val plaintext=serializeSites(sites)
+  val previous=preserveUnreadableConfig(prefs.getString("sites",null),prefs.getString("theme","system"),readPreservedConfig())
+  val editor=prefs.edit().putString("sites",encodeSites(plaintext,createKey=true)).putString("theme",restoredTheme)
+  if(previous!=null) editor.putString("recovery_previous_sites",previous.ciphertext).putString("recovery_previous_theme",previous.theme)
+  check(editor.commit()) { "保存失败" }
+ }
+ private fun serializeSites(sites: List<Site>): String {
+  val a=JSONArray(); sites.forEach { s -> a.put(JSONObject().put("id",s.id).put("name",s.name).put("url",s.url).put("key",s.key).put("account",s.account).put("userId",s.userId).put("unit",s.unit).put("subscription",s.subscription).put("cookie",s.cookie)) }
+  return a.toString()
+ }
+ private fun readPreservedConfig(): PreservedEncryptedConfig? {
+  val ciphertext=prefs.getString("recovery_previous_sites",null) ?: return null
+  return PreservedEncryptedConfig(ciphertext,prefs.getString("recovery_previous_theme","system") ?: "system")
+ }
+ private fun encodeSites(plaintext: String, createKey: Boolean = !prefs.contains("sites")): String {
+  encryptOverride?.let { return it(plaintext,createKey) }
+  val c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key(create = createKey))
+  val encrypted=c.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+  return Base64.encodeToString(c.iv,Base64.NO_WRAP)+":"+Base64.encodeToString(encrypted,Base64.NO_WRAP)
+ }
+ private fun commitSites(plaintext: String, restoredTheme: String?) {
+  val editor=prefs.edit().putString("sites",encodeSites(plaintext))
   if(restoredTheme!=null) editor.putString("theme",restoredTheme)
   check(editor.commit()) { "保存失败" }
  }
@@ -292,6 +329,16 @@ class QuotaModel(app: Application): AndroidViewModel(app) {
    if(ok) mutable.value=AppState(sites=data.sites,theme=data.theme)
    ok
   }
+ }
+ suspend fun restoreBackupAfterStorageFailure(data: BackupData): Boolean {
+  val ok=storageLock.withLock {
+   withContext(Dispatchers.IO) { runCatching { vault.restoreAfterReadFailure(data.sites,data.theme) }.isSuccess }
+  }
+  if(ok) {
+   mutable.value=AppState(sites=data.sites,theme=data.theme)
+   refreshAll()
+  }
+  return ok
  }
  fun theme(value: String) { viewModelScope.launch {
   if(!storageReady()) return@launch

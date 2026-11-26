@@ -154,6 +154,8 @@ private val MaterialThemeColorFallback=Color.Transparent
   Text("本地配置读取失败",style=MaterialTheme.typography.titleLarge)
   Text(state.storageError ?: "原配置已保留，请重试读取。")
   Button(onClick=model::retryStorage) { Text("重试读取") }
+  Spacer(Modifier.height(8.dp))
+  BackupPanel(model,recoveryMode=true)
  } else {
  state.storageError?.let { Panel { Text(it) } }
  when(tab) {

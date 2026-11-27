@@ -5,8 +5,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AccountSessionTest {
- private val site=Site(id="a",name="WK",url="https://wkapi.pro",key="expired",account=true,userId="7",cookie="refresh=old; theme=dark")
- private fun response(id: Long=7, token: String="new-token", headers: List<String> = listOf("refresh=rotated; Path=/api/user/auth; Secure; HttpOnly")): SessionResponse = SessionResponse(200,
+ private val site=Site(id="a",name="WK",url="https://wkapi.pro",key="expired",account=true,userId="7",cookie="new_api_refresh=old; theme=dark")
+ private fun response(id: Long=7, token: String="new-token", headers: List<String> = listOf("new_api_refresh=rotated; Path=/api/user/auth; Secure; HttpOnly")): SessionResponse = SessionResponse(200,
   JSONObject().put("success",true).put("data",JSONObject().put("access_token",token).put("token_type","Bearer")
    .put("access_expires_at",System.currentTimeMillis()/1000+3600).put("user",JSONObject().put("id",id))
    .put("session",JSONObject().put("sid","session-a"))).toString(),headers)
@@ -24,7 +24,7 @@ class AccountSessionTest {
   assertEquals("ok",session.read(site,"/api/log/self"))
   assertEquals(1,refreshes); assertEquals(3,reads.size); assertEquals(1,saved.size)
   assertEquals("new-token",saved.single().key)
-  assertEquals("refresh=rotated; theme=dark",saved.single().cookie)
+  assertEquals("new_api_refresh=rotated; theme=dark",saved.single().cookie)
   assertEquals(saved.single().cookie,reads.last().cookie)
  }
  @Test fun successfulReadNeverRefreshes() {
@@ -49,7 +49,7 @@ class AccountSessionTest {
   var refreshes=0
   val session=AccountSession(site,{ _,_->unauthorized() },{ refreshes++; SessionResponse(401,"secret-token-cookie") },{ fail("must not publish") })
   val error=fails { session.read(site,"/api/user/self") }
-  assertEquals("登录会话续期失败，请重新网页登录绑定",error.message)
+  assertEquals("登录会话续期失败：刷新凭据已失效，请重新网页登录绑定",error.message)
   assertNull(error.cause)
   fails { session.read(site,"/api/log/self") }; assertEquals(1,refreshes)
  }
@@ -85,11 +85,11 @@ class AccountSessionTest {
   }
  }
  @Test fun mergesCookieRotationDeletionAndExpiration() {
-  val merged=mergeSessionCookies("refresh=old; theme=dark; delete=x; expired=x",listOf(
-   "refresh=new; Path=/api/user/auth; HttpOnly; Secure", "delete=; Max-Age=0", "expired=x; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+  val merged=mergeSessionCookies("new_api_refresh=old; theme=dark; delete=x; expired=x",listOf(
+   "new_api_refresh=new; Path=/api/user/auth; HttpOnly; Secure", "delete=; Max-Age=0", "expired=x; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
    "foreign=bad; Domain=evil.example", "extra=value; Domain=.wkapi.pro"),site.url)
-  assertEquals("refresh=new; theme=dark; extra=value",merged)
-  assertEquals("theme=dark; refresh=path-specific",mergeCookieHeaders("theme=dark; refresh=root","refresh=path-specific"))
+  assertEquals("new_api_refresh=new; theme=dark; extra=value",merged)
+  assertEquals("theme=dark; new_api_refresh=path-specific",mergeCookieHeaders("theme=dark; new_api_refresh=root","new_api_refresh=path-specific"))
  }
  @Test fun renewalPreservesSubscriptionModeOnPrimaryAndWalletReads() {
   val subscription=site.copy(subscription=true,account=false)
@@ -101,7 +101,7 @@ class AccountSessionTest {
   assertEquals("new-token",targets.last().key)
  }
  @Test fun persistedSnapshotSurvivesColdRestartAndDoesNotCrossAccounts() {
-  val other=site.copy(id="b",key="other",cookie="refresh=other")
+  val other=site.copy(id="b",key="other",cookie="new_api_refresh=other")
   val renewed=parseSessionRenewal(site,response())
   val stored=renewedSites(listOf(site,other),site,renewed)!!
   assertEquals(other,stored[1]); assertEquals(renewed,stored[0])

@@ -26,14 +26,47 @@ internal fun isLoginOrigin(value: String?, origin: String): Boolean = runCatchin
 }.getOrDefault(false)
 fun isNecoOrigin(value: String?): Boolean = isLoginOrigin(value,"https://api.sbbbbbbbbb.xyz")
 
+private fun resetWebLoginSession(origin: String, onComplete: ()->Unit) {
+ val cookies=webLoginSessionResetCookies(origin)
+ if(cookies.isEmpty()) { onComplete(); return }
+ val manager=CookieManager.getInstance()
+ var pending=cookies.size
+ var finished=false
+ cookies.forEach { (url,value) -> manager.setCookie(url,value) {
+  pending--
+  if(pending==0 && !finished) { finished=true; manager.flush(); onComplete() }
+ } }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable fun SiteWebLogin(origin: String, onDismiss:()->Unit,onBound:(String,String,String)->Unit) {
  var web by remember { mutableStateOf<WebView?>(null) }
  var error by remember { mutableStateOf<String?>(null) }
+ val modernSession=remember(origin) { isCookieSessionOrigin(origin) }
  var reading by remember { mutableStateOf(false) }
+ var attached by remember(origin) { mutableStateOf(true) }
+ var handedOff by remember(origin) { mutableStateOf(false) }
+ var bindingCredentials by remember(origin) { mutableStateOf<Triple<String,String,String>?>(null) }
  val scope=rememberCoroutineScope()
  val observedToken=remember(origin) { java.util.concurrent.atomic.AtomicReference("") }
  DisposableEffect(origin) { onDispose { web?.stopLoading(); web?.destroy() } }
+ LaunchedEffect(bindingCredentials,handedOff) {
+  val credentials=bindingCredentials ?: return@LaunchedEffect
+  if(!handedOff) return@LaunchedEffect
+  val (id,token,cookie)=credentials
+  var bound=Site(name="登录验证",url=origin,key=token,account=true,userId=id,cookie=cookie)
+  val verified=withContext(Dispatchers.IO) { runCatching {
+   bound=prepareSessionBinding(bound)
+   QuotaApi.fetch(bound) { bound=it }
+  } }
+  // The WebView no longer owns this rotating cookie. Saved sites keep their
+  // credentials in Vault; a later web login starts a separate server session.
+  resetWebLoginSession(origin) {}
+  bindingCredentials=null; reading=false
+  verified.fold({onBound(bound.userId,bound.key,bound.cookie)}, {failure ->
+   error=(failure as? SessionRenewalException)?.message ?: "未能验证账户钱包，请重新登录后重试。"
+  })
+ }
  Dialog(onDismissRequest={if(!reading) onDismiss()},properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
  Surface(color=MaterialTheme.colorScheme.background,modifier=Modifier.fillMaxSize()) {
  Column(Modifier.safeDrawingPadding()) {
@@ -41,7 +74,8 @@ fun isNecoOrigin(value: String?): Boolean = isLoginOrigin(value,"https://api.sbb
  TextButton(onClick=onDismiss,enabled=!reading) { Text("取消") }
  TextButton(enabled=!reading,onClick={
  val view=web
- if(view==null || !isLoginOrigin(view.url,origin)) error="请返回本站并完成登录" else {
+ if(!attached) { error=null; observedToken.set(""); handedOff=false; attached=true }
+ else if(view==null || !isLoginOrigin(view.url,origin)) error="请返回本站并完成登录" else {
  reading=true; error=null
  view.evaluateJavascript("(function(){try{var u=JSON.parse(localStorage.getItem('user')||sessionStorage.getItem('user')||'{}');u=u.data||u;return JSON.stringify({id:u.id||'',token:u.access_token||u.token||''})}catch(e){return '{}'}})()") { result ->
  if(!isLoginOrigin(view.url,origin)) { reading=false; error="页面地址已变化，请重试"; return@evaluateJavascript }
@@ -56,7 +90,13 @@ fun isNecoOrigin(value: String?): Boolean = isLoginOrigin(value,"https://api.sbb
  Triple(id,token,cookie)
  }.getOrNull()
  if(credentials==null) {reading=false; error="未读取到登录状态。请登录并进入个人中心，再点完成绑定。"}
- else scope.launch {
+ else if(modernSession) {
+  // Expire the opaque browser cookie as well, so the webview cannot retain
+  // a stale bearer across successful binding or a corrected re-login attempt.
+  view.stopLoading(); view.loadUrl("about:blank"); attached=false
+  resetWebLoginSession(origin) {}
+  bindingCredentials=credentials
+ } else scope.launch {
  val (id,token,cookie)=credentials
  var bound=Site(name="登录验证",url=origin,key=token,account=true,userId=id,cookie=cookie)
  val verified=withContext(Dispatchers.IO) { runCatching {
@@ -67,11 +107,11 @@ fun isNecoOrigin(value: String?): Boolean = isLoginOrigin(value,"https://api.sbb
  }
  }
  }
- }) {Text(if(reading) "验证中…" else "完成绑定")}
+ }) {Text(if(reading) "验证中…" else if(!attached) "重新登录" else "完成绑定")}
  }
  Text("${URI(origin).host} · 登录后点击完成绑定",modifier=Modifier.padding(horizontal=16.dp,vertical=4.dp),style=MaterialTheme.typography.bodySmall)
  error?.let {Text(it,modifier=Modifier.padding(16.dp))}
- AndroidView(modifier=Modifier.weight(1f).fillMaxWidth(),factory={context ->
+ if(attached) AndroidView(modifier=Modifier.weight(1f).fillMaxWidth(),factory={context ->
  WebView(context).apply {
  settings.javaScriptEnabled=true; settings.domStorageEnabled=true
  settings.allowFileAccess=false; settings.allowContentAccess=false
@@ -91,9 +131,15 @@ fun isNecoOrigin(value: String?): Boolean = isLoginOrigin(value,"https://api.sbb
  return !allowed
  }
  }
- web=this; loadUrl("$origin/login")
+ val view=this
+ web=view
+ resetWebLoginSession(origin) { if(web===view && attached) view.loadUrl("$origin/login") }
  }
- })
+ },onRelease={view ->
+  view.stopLoading(); view.destroy()
+  if(web===view) web=null
+  if(modernSession) handedOff=true
+ },update={})
  }
  }
  }
